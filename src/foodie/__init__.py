@@ -1,3 +1,4 @@
+from foodie.keyring import SecretStore
 from foodie.models import (
     Address,
     Cart,
@@ -12,6 +13,7 @@ from foodie.models import (
     Restaurant,
 )
 from foodie.providers.base import BaseProvider
+from foodie.providers.swiggy import SwiggyProvider
 
 __all__ = [
     "Address",
@@ -26,4 +28,6 @@ __all__ = [
     "ProviderName",
     "Restaurant",
     "BaseProvider",
+    "SwiggyProvider",
+    "SecretStore",
 ]
