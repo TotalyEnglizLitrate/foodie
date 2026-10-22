@@ -1,3 +1,4 @@
+from foodie.auth import authenticate_interactive
 from foodie.keyring import SecretStore
 from foodie.models import (
     Address,
@@ -14,6 +15,7 @@ from foodie.models import (
 )
 from foodie.providers.base import BaseProvider
 from foodie.providers.swiggy import SwiggyProvider
+from foodie.providers.zomato import ZomatoProvider
 
 __all__ = [
     "Address",
@@ -29,5 +31,7 @@ __all__ = [
     "Restaurant",
     "BaseProvider",
     "SwiggyProvider",
+    "ZomatoProvider",
     "SecretStore",
+    "authenticate_interactive",
 ]
