@@ -381,18 +381,26 @@ class ZomatoProvider(BaseProvider):
         # slow enough to time out for large menus.
         mappings = listing.get("item_mappings", [])
         if mappings:
-            return [
-                MenuItem(
-                    id=str(item.get("variant_id")),
-                    name=item.get("item_name", ""),
-                    price=float(item.get("price", 0)),
-                    category=(item.get("categories") or [""])[0],
-                    variants=[item] if item.get("has_more_variants") else [],
-                    raw=item,
+            items: list[MenuItem] = []
+            seen_variant_ids: set[str] = set()
+            for item in mappings:
+                if not isinstance(item, dict) or not item.get("variant_id"):
+                    continue
+                variant_id = str(item["variant_id"])
+                if variant_id in seen_variant_ids:
+                    continue
+                seen_variant_ids.add(variant_id)
+                items.append(
+                    MenuItem(
+                        id=variant_id,
+                        name=item.get("item_name", ""),
+                        price=float(item.get("price", 0)),
+                        category=(item.get("categories") or [""])[0],
+                        variants=[item] if item.get("has_more_variants") else [],
+                        raw=item,
+                    )
                 )
-                for item in mappings
-                if isinstance(item, dict) and item.get("variant_id")
-            ]
+            return items
         categories = self._categories(listing)
         if not categories:
             return []

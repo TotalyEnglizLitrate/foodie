@@ -491,31 +491,39 @@ class SwiggyProvider(BaseProvider):
         return self._parse_cart(res)
 
     def _parse_cart(self, res: dict[str, Any]) -> Cart:
-        restaurant_id = str(res.get("restaurantId", ""))
-        items_raw = res.get("items", [])
+        cart_data = res.get("data", res)
+        restaurant_id = str(
+            cart_data.get("restaurantId")
+            or cart_data.get("restaurant_id")
+            or ""
+        )
+        items_raw = cart_data.get("items", [])
         parsed_items: list[CartItem] = []
         for it in items_raw:
             parsed_items.append(
                 CartItem(
-                    item_id=str(it.get("itemId") or it.get("id")),
+                    item_id=str(it.get("menu_item_id") or it.get("itemId") or it.get("id")),
                     name=it.get("name", ""),
-                    price=float(it.get("price", 0)),
+                    price=float(it.get("final_price") or it.get("price") or 0),
                     quantity=int(it.get("quantity", 1)),
                     selected_variants=it.get("variants", []),
                     selected_addons=it.get("addons", []),
                 )
             )
 
-        bill = res.get("bill", {}) or res
+        bill = cart_data.get("pricing") or cart_data.get("bill") or cart_data
+        offers = cart_data.get("offers", {}) or {}
         return Cart(
             restaurant_id=restaurant_id,
             items=parsed_items,
-            item_total=float(bill.get("itemTotal", 0)),
-            delivery_fee=float(bill.get("deliveryFee", 0)),
-            taxes=float(bill.get("taxes", 0)),
-            discount=float(bill.get("discount", 0)),
-            grand_total=float(bill.get("grandTotal") or bill.get("total", 0)),
-            raw=res,
+            item_total=float(bill.get("item_total") or bill.get("itemTotal") or 0),
+            delivery_fee=float(bill.get("delivery_charge") or bill.get("deliveryFee") or 0),
+            taxes=float(bill.get("taxes_and_charges") or bill.get("taxes") or 0),
+            discount=float(offers.get("coupon_discount") or bill.get("discount") or 0),
+            grand_total=float(
+                bill.get("to_pay") or bill.get("grandTotal") or bill.get("total") or 0
+            ),
+            raw=cart_data,
         )
 
     # --- Checkout & Payments ---
