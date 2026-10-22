@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import secrets
 import time
 from typing import Any
@@ -286,7 +287,19 @@ class SwiggyProvider(BaseProvider):
 
     # --- Discovery & Menu ---
 
+    @staticmethod
+    def _as_float(value: Any) -> float | None:
+        """Accept MCP numeric fields that may be returned as display text."""
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        match = re.search(r"\d+(?:\.\d+)?", str(value).replace(",", ""))
+        return float(match.group()) if match else None
+
     async def search_restaurants(self, query: str, address_id: str) -> list[Restaurant]:
+        if not query.strip():
+            raise ValueError("Swiggy restaurant searches require a non-empty query.")
         self._active_address_id = address_id
         res = await self._call_tool(
             "search_restaurants", {"query": query, "addressId": address_id}
@@ -305,8 +318,8 @@ class SwiggyProvider(BaseProvider):
                     cuisines=r.get("cuisines", []),
                     rating=float(r.get("avgRating") or r.get("rating", 0.0)) or None,
                     delivery_time_mins=delivery_time,
-                    distance_km=float(distance) if distance is not None else None,
-                    cost_for_two=float(r.get("costForTwo", 0)) or None,
+                    distance_km=self._as_float(distance),
+                    cost_for_two=self._as_float(r.get("costForTwo")),
                     is_open=r.get("availabilityStatus", "OPEN").upper() == "OPEN",
                     image_url=r.get("cloudinaryImageId"),
                     raw=r,

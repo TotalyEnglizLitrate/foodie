@@ -293,7 +293,11 @@ class ZomatoProvider(BaseProvider):
         self._active_address_id = address_id
         args = {"keyword": query, "address_id": address_id}
         res = await self._call_tool("get_restaurants_for_keyword", args)
-        restaurants_raw = res.get("restaurants", []) if isinstance(res, dict) else res
+        restaurants_raw = (
+            res.get("restaurants") or res.get("results", [])
+            if isinstance(res, dict)
+            else res
+        )
         restaurants: list[Restaurant] = []
         for r in restaurants_raw:
             rating_val = None
@@ -309,7 +313,7 @@ class ZomatoProvider(BaseProvider):
                     name=r.get("name", "Unknown Restaurant"),
                     cuisines=r.get("cuisines", "").split(", ") if isinstance(r.get("cuisines"), str) else r.get("cuisines", []),
                     rating=rating_val,
-                    delivery_time_mins=r.get("delivery_time"),
+                    delivery_time_mins=r.get("delivery_time") or r.get("eta"),
                     distance_km=float(r.get("distance")) if r.get("distance") is not None else None,
                     cost_for_two=float(r.get("cost_for_two")) if r.get("cost_for_two") else None,
                     is_open=bool(r.get("is_open", True)),
