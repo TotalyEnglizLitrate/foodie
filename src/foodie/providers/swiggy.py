@@ -334,6 +334,23 @@ class SwiggyProvider(BaseProvider):
             raise ValueError("An address_id is required for this Swiggy operation.")
         return self._active_address_id
 
+    @staticmethod
+    def _menu_items(res: dict[str, Any]) -> list[dict[str, Any]]:
+        """Flatten the category-based menu response returned by Swiggy MCP."""
+        items = res.get("items")
+        if isinstance(items, list):
+            return items
+
+        flattened: list[dict[str, Any]] = []
+        for category in res.get("categories", []):
+            if not isinstance(category, dict):
+                continue
+            category_name = category.get("title") or category.get("name") or ""
+            for item in category.get("items", []):
+                if isinstance(item, dict):
+                    flattened.append({**item, "category": category_name})
+        return flattened
+
     async def get_menu(
         self, restaurant_id: str, address_id: str | None = None
     ) -> list[MenuItem]:
@@ -341,10 +358,10 @@ class SwiggyProvider(BaseProvider):
             "get_restaurant_menu",
             {"restaurantId": restaurant_id, "addressId": self._address_id(address_id)},
         )
-        items_raw = res.get("items", []) if isinstance(res, dict) else res
+        items_raw = self._menu_items(res) if isinstance(res, dict) else res
         items: list[MenuItem] = []
         for item in items_raw:
-            price = float(item.get("price", 0)) / 100 if item.get("price", 0) > 1000 else float(item.get("price", 0))
+            price = float(item.get("price", 0))
             items.append(
                 MenuItem(
                     id=str(item.get("id") or item.get("itemId")),
@@ -372,10 +389,10 @@ class SwiggyProvider(BaseProvider):
                 "addressId": self._address_id(address_id),
             },
         )
-        items_raw = res.get("items", []) if isinstance(res, dict) else res
+        items_raw = self._menu_items(res) if isinstance(res, dict) else res
         items: list[MenuItem] = []
         for item in items_raw:
-            price = float(item.get("price", 0)) / 100 if item.get("price", 0) > 1000 else float(item.get("price", 0))
+            price = float(item.get("price", 0))
             items.append(
                 MenuItem(
                     id=str(item.get("id") or item.get("itemId")),

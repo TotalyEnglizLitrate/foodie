@@ -341,6 +341,13 @@ class ZomatoProvider(BaseProvider):
     def _categories(res: dict[str, Any]) -> list[str]:
         """Extract category names from the lightweight menu-listing response."""
         candidates = res.get("categories") or res.get("menu_categories") or []
+        if not candidates:
+            candidates = [
+                category
+                for item in res.get("item_mappings", [])
+                if isinstance(item, dict)
+                for category in item.get("categories", [])
+            ]
         if isinstance(candidates, dict):
             candidates = list(candidates)
         if not candidates:
@@ -369,6 +376,23 @@ class ZomatoProvider(BaseProvider):
             "get_menu_items_listing",
             {"res_id": res_id, "address_id": resolved_address_id},
         )
+        # The listing already carries directly orderable variant IDs.  Prefer it
+        # for interactive selection: requesting every detailed category can be
+        # slow enough to time out for large menus.
+        mappings = listing.get("item_mappings", [])
+        if mappings:
+            return [
+                MenuItem(
+                    id=str(item.get("variant_id")),
+                    name=item.get("item_name", ""),
+                    price=float(item.get("price", 0)),
+                    category=(item.get("categories") or [""])[0],
+                    variants=[item] if item.get("has_more_variants") else [],
+                    raw=item,
+                )
+                for item in mappings
+                if isinstance(item, dict) and item.get("variant_id")
+            ]
         categories = self._categories(listing)
         if not categories:
             return []
