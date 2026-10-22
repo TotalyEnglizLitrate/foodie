@@ -145,6 +145,7 @@ class ZomatoProvider(BaseProvider):
 
     async def complete_auth(self, code: str, verifier: str, redirect_uri: str) -> bool:
         client_id, client_secret = await self._get_or_register_client(redirect_uri)
+        # Zomato /token follows OAuth 2.1 spec: application/x-www-form-urlencoded
         payload = {
             "grant_type": "authorization_code",
             "code": code,
@@ -153,7 +154,7 @@ class ZomatoProvider(BaseProvider):
             "client_id": client_id,
             "client_secret": client_secret,
         }
-        resp = await self._http.post(f"{self.BASE_URL}/token", json=payload)
+        resp = await self._http.post(f"{self.BASE_URL}/token", data=payload)
         if resp.status_code != 200:
             return False
 
@@ -176,7 +177,8 @@ class ZomatoProvider(BaseProvider):
             "grant_type": "refresh_token",
             "refresh_token": tokens["refresh_token"],
         }
-        resp = await self._http.post(f"{self.BASE_URL}/token", json=payload)
+        # Zomato /token follows OAuth 2.1 spec: application/x-www-form-urlencoded
+        resp = await self._http.post(f"{self.BASE_URL}/token", data=payload)
         if resp.status_code != 200:
             return False
 

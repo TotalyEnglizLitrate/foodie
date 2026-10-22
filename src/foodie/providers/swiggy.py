@@ -246,7 +246,10 @@ class SwiggyProvider(BaseProvider):
             raise RuntimeError(f"Swiggy tool error: {err.get('message', err)}")
 
         result = res_json.get("result", {})
-        # If response wraps standard MCP content block
+        # Swiggy MCP returns structured data in result.structuredContent
+        if isinstance(result, dict) and "structuredContent" in result:
+            return result["structuredContent"]
+        # Fallback: parse JSON from the text content block
         if isinstance(result, dict) and "content" in result:
             for c in result.get("content", []):
                 if c.get("type") == "text":
@@ -271,8 +274,8 @@ class SwiggyProvider(BaseProvider):
             addresses.append(
                 Address(
                     id=str(a.get("id") or a.get("addressId")),
-                    label=a.get("label", "Address"),
-                    formatted_address=a.get("address") or a.get("formattedAddress", ""),
+                    label=a.get("addressTag") or a.get("addressCategory") or a.get("label", "Address"),
+                    formatted_address=a.get("addressLine") or a.get("address") or a.get("formattedAddress", ""),
                     latitude=a.get("lat") or a.get("latitude"),
                     longitude=a.get("lng") or a.get("longitude"),
                     raw=a,
