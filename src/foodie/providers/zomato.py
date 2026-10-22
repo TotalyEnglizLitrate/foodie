@@ -42,6 +42,10 @@ class ZomatoProvider(BaseProvider):
     def __init__(self, store: SecretStore | None = None) -> None:
         self.store = store or SecretStore()
         self._http = httpx.AsyncClient(timeout=30.0)
+        self._active_address_id: str | None = None
+        self._cart_response: dict[str, Any] | None = None
+        self._cart_payment_type: str | None = None
+        self._cart_restaurant_id: int | None = None
 
     @property
     def name(self) -> ProviderName:
@@ -286,6 +290,7 @@ class ZomatoProvider(BaseProvider):
     # --- Discovery & Menu ---
 
     async def search_restaurants(self, query: str, address_id: str) -> list[Restaurant]:
+        self._active_address_id = address_id
         args = {"keyword": query, "address_id": address_id}
         res = await self._call_tool("get_restaurants_for_keyword", args)
         restaurants_raw = res.get("restaurants", []) if isinstance(res, dict) else res
@@ -314,9 +319,63 @@ class ZomatoProvider(BaseProvider):
             )
         return restaurants
 
-    async def get_menu(self, restaurant_id: str) -> list[MenuItem]:
-        args = {"res_id": restaurant_id}
-        res = await self._call_tool("get_menu_items_listing", args)
+    def _address_id(self, address_id: str | None = None) -> str:
+        if address_id:
+            self._active_address_id = address_id
+        if not self._active_address_id:
+            raise ValueError("An address_id is required for this Zomato operation.")
+        return self._active_address_id
+
+    @staticmethod
+    def _restaurant_id(restaurant_id: str) -> int:
+        try:
+            return int(restaurant_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Zomato restaurant IDs must be numeric.") from exc
+
+    @staticmethod
+    def _categories(res: dict[str, Any]) -> list[str]:
+        """Extract category names from the lightweight menu-listing response."""
+        candidates = res.get("categories") or res.get("menu_categories") or []
+        if isinstance(candidates, dict):
+            candidates = list(candidates)
+        if not candidates:
+            items = res.get("items") or res.get("menu_items") or []
+            if isinstance(items, dict):
+                candidates = list(items.values())
+            else:
+                candidates = [
+                    item.get("category") or item.get("category_name")
+                    for item in items
+                    if isinstance(item, dict)
+                ]
+        return list(dict.fromkeys(
+            str(category.get("name") or category.get("category_name") or category.get("id"))
+            if isinstance(category, dict) else str(category)
+            for category in candidates
+            if category
+        ))
+
+    async def get_menu(
+        self, restaurant_id: str, address_id: str | None = None
+    ) -> list[MenuItem]:
+        res_id = self._restaurant_id(restaurant_id)
+        resolved_address_id = self._address_id(address_id)
+        listing = await self._call_tool(
+            "get_menu_items_listing",
+            {"res_id": res_id, "address_id": resolved_address_id},
+        )
+        categories = self._categories(listing)
+        if not categories:
+            return []
+        res = await self._call_tool(
+            "get_restaurant_menu_by_categories",
+            {
+                "res_id": res_id,
+                "categories": categories,
+                "address_id": resolved_address_id,
+            },
+        )
         items_raw = res.get("items", []) if isinstance(res, dict) else res
         items: list[MenuItem] = []
         for it in items_raw:
@@ -336,38 +395,96 @@ class ZomatoProvider(BaseProvider):
             )
         return items
 
-    async def search_menu(self, restaurant_id: str, query: str) -> list[MenuItem]:
+    async def search_menu(
+        self, restaurant_id: str, query: str, address_id: str | None = None
+    ) -> list[MenuItem]:
         # Filter items matching query
-        all_items = await self.get_menu(restaurant_id)
+        all_items = await self.get_menu(restaurant_id, address_id)
         q = query.lower()
         return [item for item in all_items if q in item.name.lower() or q in item.description.lower()]
 
     # --- Cart Operations ---
 
-    async def get_cart(self) -> Cart:
-        res = await self._call_tool("create_cart", {"action": "get"})
-        return self._parse_cart(res)
+    async def get_cart(self, address_id: str | None = None) -> Cart:
+        # Zomato exposes no read-cart tool; create_cart returns the authoritative
+        # cart payload, so retain that response for the current provider session.
+        self._address_id(address_id)
+        if self._cart_response is None:
+            raise RuntimeError("Zomato has no cart-read endpoint; create a cart first.")
+        return self._parse_cart(self._cart_response)
 
     async def update_cart(
-        self, restaurant_id: str, items: list[CartItem], address_id: str
+        self,
+        restaurant_id: str,
+        items: list[CartItem],
+        address_id: str,
+        payment_method: str | None = None,
     ) -> Cart:
         payload_items = [
-            {"item_id": it.item_id, "quantity": it.quantity} for it in items
+            {
+                "variant_id": it.item_id,
+                "quantity": it.quantity,
+                "add_ons": [
+                    {
+                        "id": str(addon.get("id") or addon.get("choice_id")),
+                        "quantity": int(addon.get("quantity", 1)),
+                    }
+                    for addon in it.selected_addons
+                    if addon.get("id") or addon.get("choice_id")
+                ]
+                or None,
+            }
+            for it in items
         ]
+        payment_type = self._payment_type(payment_method)
+        res_id = self._restaurant_id(restaurant_id)
         args = {
-            "res_id": restaurant_id,
-            "address_id": address_id,
+            "res_id": res_id,
+            "address_id": self._address_id(address_id),
             "items": payload_items,
+            "payment_type": payment_type,
         }
         res = await self._call_tool("create_cart", args)
+        self._cart_response = res
+        self._cart_payment_type = payment_type
+        self._cart_restaurant_id = res_id
         return self._parse_cart(res)
 
     async def clear_cart(self) -> None:
-        await self._call_tool("create_cart", {"items": []})
+        if not self._cart_response or not self._cart_payment_type:
+            raise RuntimeError("Zomato has no cart to clear in this provider session.")
+        res_id = (
+            self._cart_response.get("res_id")
+            or self._cart_response.get("restaurant_id")
+            or self._cart_restaurant_id
+        )
+        if res_id is None:
+            raise RuntimeError("Zomato cart response did not include a restaurant ID.")
+        self._cart_response = await self._call_tool(
+            "create_cart",
+            {
+                "res_id": self._restaurant_id(str(res_id)),
+                "items": [],
+                "address_id": self._address_id(),
+                "payment_type": self._cart_payment_type,
+            },
+        )
 
-    async def apply_coupon(self, code: str) -> Cart:
-        res = await self._call_tool("create_cart", {"coupon_code": code})
-        return self._parse_cart(res)
+    async def apply_coupon(self, code: str, address_id: str | None = None) -> Cart:
+        raise NotImplementedError("Zomato MCP does not expose a coupon-application tool.")
+
+    def _payment_type(self, payment_method: str | None) -> str:
+        normalized = (payment_method or "").lower()
+        aliases = {
+            "upi": "upi",
+            "upi_qr": "upi",
+            "cash": "cash_on_delivery",
+            "cod": "cash_on_delivery",
+            "cash_on_delivery": "cash_on_delivery",
+        }
+        if normalized not in aliases:
+            raise ValueError("Zomato cart requires payment_method 'upi' or 'cash_on_delivery'.")
+        return aliases[normalized]
 
     def _parse_cart(self, res: dict[str, Any]) -> Cart:
         res_id = str(res.get("res_id", ""))
@@ -398,6 +515,7 @@ class ZomatoProvider(BaseProvider):
     # --- Checkout & Payments ---
 
     async def get_payment_options(self, address_id: str) -> list[PaymentMethod]:
+        self._active_address_id = address_id
         # Zomato MCP checkout uses UPI QR or online link
         return [
             PaymentMethod(id="UPI_QR", name="UPI QR Code (Scan to pay)", method_type="UPI_QR"),
@@ -407,11 +525,13 @@ class ZomatoProvider(BaseProvider):
     async def place_order(
         self, payment_method: str, address_id: str, **kwargs: Any
     ) -> OrderPlacement:
-        args = {
-            "address_id": address_id,
-            "payment_method": payment_method,
-            **kwargs,
-        }
+        self._active_address_id = address_id
+        cart_id = kwargs.pop("cart_id", None)
+        if not cart_id and self._cart_response:
+            cart_id = self._cart_response.get("cart_id") or self._cart_response.get("cartId")
+        if not cart_id:
+            raise ValueError("Zomato checkout requires a cart_id from create_cart.")
+        args = {"cart_id": str(cart_id), "payment_method_type": self._payment_type(payment_method)}
         res = await self._call_tool("checkout_cart", args)
 
         order_id = str(res.get("order_id", ""))
@@ -441,8 +561,10 @@ class ZomatoProvider(BaseProvider):
 
     # --- History & Live Tracking ---
 
-    async def get_orders(self) -> list[OrderSummary]:
-        res = await self._call_tool("get_order_history", {})
+    async def get_orders(self, address_id: str | None = None) -> list[OrderSummary]:
+        res = await self._call_tool(
+            "get_order_history", {"address_id": self._address_id(address_id)}
+        )
         orders_raw = res.get("orders", []) if isinstance(res, dict) else res
         summaries: list[OrderSummary] = []
         for o in orders_raw:

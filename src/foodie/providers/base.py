@@ -81,23 +81,31 @@ class BaseProvider(ABC):
         ...
 
     @abstractmethod
-    async def get_menu(self, restaurant_id: str) -> list[MenuItem]:
+    async def get_menu(
+        self, restaurant_id: str, address_id: str | None = None
+    ) -> list[MenuItem]:
         """Retrieve the menu items available at a specific restaurant."""
         ...
 
     @abstractmethod
-    async def search_menu(self, restaurant_id: str, query: str) -> list[MenuItem]:
+    async def search_menu(
+        self, restaurant_id: str, query: str, address_id: str | None = None
+    ) -> list[MenuItem]:
         """Search for specific dishes or keywords within a restaurant's menu."""
         ...
 
     @abstractmethod
-    async def get_cart(self) -> Cart:
+    async def get_cart(self, address_id: str | None = None) -> Cart:
         """Get current cart contents and pricing breakdown."""
         ...
 
     @abstractmethod
     async def update_cart(
-        self, restaurant_id: str, items: list[CartItem], address_id: str
+        self,
+        restaurant_id: str,
+        items: list[CartItem],
+        address_id: str,
+        payment_method: str | None = None,
     ) -> Cart:
         """
         Add, remove, or update items in the cart.
@@ -111,7 +119,7 @@ class BaseProvider(ABC):
         ...
 
     @abstractmethod
-    async def apply_coupon(self, code: str) -> Cart:
+    async def apply_coupon(self, code: str, address_id: str | None = None) -> Cart:
         """Apply a discount coupon code to the current cart and return updated totals."""
         ...
 
@@ -141,7 +149,7 @@ class BaseProvider(ABC):
         ...
 
     @abstractmethod
-    async def get_orders(self) -> list[OrderSummary]:
+    async def get_orders(self, address_id: str | None = None) -> list[OrderSummary]:
         """Fetch order history for the user."""
         ...
 

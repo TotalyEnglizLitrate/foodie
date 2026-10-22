@@ -41,6 +41,7 @@ class SwiggyProvider(BaseProvider):
     def __init__(self, store: SecretStore | None = None) -> None:
         self.store = store or SecretStore()
         self._http = httpx.AsyncClient(timeout=30.0)
+        self._active_address_id: str | None = None
 
     @property
     def name(self) -> ProviderName:
@@ -286,6 +287,7 @@ class SwiggyProvider(BaseProvider):
     # --- Discovery & Menu ---
 
     async def search_restaurants(self, query: str, address_id: str) -> list[Restaurant]:
+        self._active_address_id = address_id
         res = await self._call_tool(
             "search_restaurants", {"query": query, "addressId": address_id}
         )
@@ -312,8 +314,20 @@ class SwiggyProvider(BaseProvider):
             )
         return restaurants
 
-    async def get_menu(self, restaurant_id: str) -> list[MenuItem]:
-        res = await self._call_tool("get_restaurant_menu", {"restaurantId": restaurant_id})
+    def _address_id(self, address_id: str | None = None) -> str:
+        if address_id:
+            self._active_address_id = address_id
+        if not self._active_address_id:
+            raise ValueError("An address_id is required for this Swiggy operation.")
+        return self._active_address_id
+
+    async def get_menu(
+        self, restaurant_id: str, address_id: str | None = None
+    ) -> list[MenuItem]:
+        res = await self._call_tool(
+            "get_restaurant_menu",
+            {"restaurantId": restaurant_id, "addressId": self._address_id(address_id)},
+        )
         items_raw = res.get("items", []) if isinstance(res, dict) else res
         items: list[MenuItem] = []
         for item in items_raw:
@@ -334,9 +348,16 @@ class SwiggyProvider(BaseProvider):
             )
         return items
 
-    async def search_menu(self, restaurant_id: str, query: str) -> list[MenuItem]:
+    async def search_menu(
+        self, restaurant_id: str, query: str, address_id: str | None = None
+    ) -> list[MenuItem]:
         res = await self._call_tool(
-            "search_menu", {"restaurantId": restaurant_id, "query": query}
+            "search_menu",
+            {
+                "restaurantIdOfAddedItem": restaurant_id,
+                "query": query,
+                "addressId": self._address_id(address_id),
+            },
         )
         items_raw = res.get("items", []) if isinstance(res, dict) else res
         items: list[MenuItem] = []
@@ -360,16 +381,22 @@ class SwiggyProvider(BaseProvider):
 
     # --- Cart ---
 
-    async def get_cart(self) -> Cart:
-        res = await self._call_tool("get_food_cart", {})
+    async def get_cart(self, address_id: str | None = None) -> Cart:
+        res = await self._call_tool(
+            "get_food_cart", {"addressId": self._address_id(address_id)}
+        )
         return self._parse_cart(res)
 
     async def update_cart(
-        self, restaurant_id: str, items: list[CartItem], address_id: str
+        self,
+        restaurant_id: str,
+        items: list[CartItem],
+        address_id: str,
+        payment_method: str | None = None,
     ) -> Cart:
         payload_items = [
             {
-                "itemId": it.item_id,
+                "menu_item_id": it.item_id,
                 "quantity": it.quantity,
                 "variants": it.selected_variants,
                 "addons": it.selected_addons,
@@ -378,15 +405,22 @@ class SwiggyProvider(BaseProvider):
         ]
         res = await self._call_tool(
             "update_food_cart",
-            {"restaurantId": restaurant_id, "items": payload_items, "addressId": address_id},
+            {
+                "restaurantId": restaurant_id,
+                "cartItems": payload_items,
+                "addressId": self._address_id(address_id),
+            },
         )
         return self._parse_cart(res)
 
     async def clear_cart(self) -> None:
         await self._call_tool("flush_food_cart", {})
 
-    async def apply_coupon(self, code: str) -> Cart:
-        res = await self._call_tool("apply_food_coupon", {"code": code})
+    async def apply_coupon(self, code: str, address_id: str | None = None) -> Cart:
+        res = await self._call_tool(
+            "apply_food_coupon",
+            {"couponCode": code, "addressId": self._address_id(address_id)},
+        )
         return self._parse_cart(res)
 
     def _parse_cart(self, res: dict[str, Any]) -> Cart:
@@ -420,6 +454,7 @@ class SwiggyProvider(BaseProvider):
     # --- Checkout & Payments ---
 
     async def get_payment_options(self, address_id: str) -> list[PaymentMethod]:
+        self._active_address_id = address_id
         res = await self._call_tool("get_payment_options", {"addressId": address_id})
         options: list[PaymentMethod] = []
 
@@ -456,6 +491,7 @@ class SwiggyProvider(BaseProvider):
     async def place_order(
         self, payment_method: str, address_id: str, **kwargs: Any
     ) -> OrderPlacement:
+        self._active_address_id = address_id
         args: dict[str, Any] = {
             "addressId": address_id,
             "paymentMethod": payment_method,
@@ -479,7 +515,10 @@ class SwiggyProvider(BaseProvider):
         )
 
     async def check_payment_status(self, order_id: str, **kwargs: Any) -> dict[str, Any]:
-        args = {"orderId": order_id, **kwargs}
+        paas_id = kwargs.pop("paasId", None) or kwargs.pop("paas_id", None)
+        if not paas_id:
+            raise ValueError("Swiggy payment-status checks require the checkout paasId.")
+        args = {"paasId": paas_id, "orderId": order_id, **kwargs}
         return await self._call_tool("check_payment_status", args)
 
     async def confirm_order(self, order_id: str, **kwargs: Any) -> OrderSummary:
@@ -495,8 +534,10 @@ class SwiggyProvider(BaseProvider):
 
     # --- Orders & Tracking ---
 
-    async def get_orders(self) -> list[OrderSummary]:
-        res = await self._call_tool("get_food_orders", {})
+    async def get_orders(self, address_id: str | None = None) -> list[OrderSummary]:
+        res = await self._call_tool(
+            "get_food_orders", {"addressId": self._address_id(address_id)}
+        )
         orders_raw = res.get("orders", []) if isinstance(res, dict) else res
         summaries: list[OrderSummary] = []
         for o in orders_raw:
