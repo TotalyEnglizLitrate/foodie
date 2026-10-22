@@ -38,6 +38,8 @@ class SwiggyProvider(BaseProvider):
     SERVICE_KEY = "foodie-swiggy"
     ACCOUNT_KEY = "tokens"
     CLIENT_INFO_KEY = "client_info"
+    MENU_PAGE_SIZE = 100
+    MAX_MENU_PAGES = 100
 
     def __init__(self, store: SecretStore | None = None) -> None:
         self.store = store or SecretStore()
@@ -351,14 +353,49 @@ class SwiggyProvider(BaseProvider):
                     flattened.append({**item, "category": category_name})
         return flattened
 
+    @staticmethod
+    def _has_more_menu_items(res: dict[str, Any]) -> bool:
+        """Return whether any category advertises a following menu page."""
+        return any(
+            isinstance(category, dict) and category.get("hasMoreItems", False)
+            for category in res.get("categories", [])
+        )
+
     async def get_menu(
         self, restaurant_id: str, address_id: str | None = None
     ) -> list[MenuItem]:
-        res = await self._call_tool(
-            "get_restaurant_menu",
-            {"restaurantId": restaurant_id, "addressId": self._address_id(address_id)},
-        )
-        items_raw = self._menu_items(res) if isinstance(res, dict) else res
+        resolved_address_id = self._address_id(address_id)
+        items_raw: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for page in range(1, self.MAX_MENU_PAGES + 1):
+            res = await self._call_tool(
+                "get_restaurant_menu",
+                {
+                    "restaurantId": restaurant_id,
+                    "addressId": resolved_address_id,
+                    "page": page,
+                    "pageSize": self.MENU_PAGE_SIZE,
+                },
+            )
+            page_items = self._menu_items(res) if isinstance(res, dict) else res
+            new_items = 0
+            for item in page_items:
+                item_id = str(item.get("id") or item.get("itemId") or "")
+                # "Recommended" repeats items found in their actual category.
+                # Keep an ID-less item rather than silently dropping it.
+                if item_id and item_id in seen_ids:
+                    continue
+                if item_id:
+                    seen_ids.add(item_id)
+                items_raw.append(item)
+                new_items += 1
+
+            if not isinstance(res, dict) or not self._has_more_menu_items(res):
+                break
+            # Protect against an endpoint that ignores page and repeats page 1.
+            if not page_items or not new_items:
+                break
+
         items: list[MenuItem] = []
         for item in items_raw:
             price = float(item.get("price", 0))
