@@ -483,8 +483,8 @@ class ZomatoProvider(BaseProvider):
                 Restaurant(
                     id=str(r["res_id"]),
                     name=r.get("name") or "Unknown Restaurant",
-                    # Not provided by this tool; kept empty rather than guessed.
-                    cuisines=[],
+                    cuisines=r.get("cuisines") or [],
+                    # The search response may omit pricing; preserve it when supplied.
                     # 0.0 is the schema default for "no rating yet".
                     rating=float(rating) if rating else None,
                     # `eta` is a string such as "30 mins" / "25-30 mins".
@@ -494,7 +494,19 @@ class ZomatoProvider(BaseProvider):
                         if r.get("distance") is not None
                         else None
                     ),
-                    cost_for_two=None,
+                    # Search results often use 0 as a placeholder when this
+                    # field is not supplied. Do not present that as a real price.
+                    cost_for_two=(
+                        _num(
+                            r.get("cost_for_two")
+                            if r.get("cost_for_two") is not None
+                            else r.get("costForTwo")
+                            if r.get("costForTwo") is not None
+                            else r.get("average_cost_for_two"),
+                            default=0.0,
+                        )
+                        or None
+                    ),
                     is_open=r.get("serviceability_status") != "unserviceable",
                     image_url=r.get("res_image"),
                     raw=r,
