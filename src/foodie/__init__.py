@@ -1,5 +1,5 @@
 from foodie.auth import authenticate_interactive
-from foodie.keyring import SecretStore
+from foodie.secret_store import SecretStore
 from foodie.models import (
     Address,
     Cart,

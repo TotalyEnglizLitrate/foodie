@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -10,7 +11,7 @@ from urllib.parse import urlencode
 
 import httpx
 
-from foodie.keyring import SecretStore
+from foodie.secret_store import SecretStore
 from foodie.models import (
     Address,
     Cart,
@@ -58,7 +59,7 @@ class ZomatoProvider(BaseProvider):
     # --- Authentication Lifecycle ---
 
     async def _get_tokens(self) -> dict[str, Any] | None:
-        raw = await self.store.get_credential(self.SERVICE_KEY, self.ACCOUNT_KEY)
+        raw = await self.store.get_credential(self.SERVICE_KEY, self.ACCOUNT_KEY, self.name)
         if not raw:
             return None
         try:
@@ -71,7 +72,7 @@ class ZomatoProvider(BaseProvider):
             self.SERVICE_KEY,
             self.ACCOUNT_KEY,
             json.dumps(tokens),
-            label="Zomato MCP Session Tokens",
+            self.name,
         )
 
     async def is_authenticated(self) -> bool:
@@ -110,7 +111,7 @@ class ZomatoProvider(BaseProvider):
         return auth_url, code_verifier
 
     async def _get_or_register_client(self, redirect_uri: str) -> tuple[str, str]:
-        raw_info = await self.store.get_credential(self.SERVICE_KEY, self.CLIENT_INFO_KEY)
+        raw_info = await self.store.get_credential(self.SERVICE_KEY, self.CLIENT_INFO_KEY, self.name)
         if raw_info:
             try:
                 info = json.loads(raw_info)
@@ -142,6 +143,7 @@ class ZomatoProvider(BaseProvider):
                         "redirect_uri": redirect_uri,
                     }
                 ),
+                self.name
             )
             return client_id, client_secret
 
@@ -196,7 +198,7 @@ class ZomatoProvider(BaseProvider):
         return True
 
     async def logout(self) -> None:
-        await self.store.delete_credential(self.SERVICE_KEY, self.ACCOUNT_KEY)
+        await self.store.delete_credential(self.SERVICE_KEY, self.ACCOUNT_KEY, self.name)
 
     # --- Tool Call Bridge (JSON-RPC over Streamable HTTP) ---
 
@@ -376,11 +378,41 @@ class ZomatoProvider(BaseProvider):
             "get_menu_items_listing",
             {"res_id": res_id, "address_id": resolved_address_id},
         )
-        # The listing already carries directly orderable variant IDs.  Prefer it
-        # for interactive selection: requesting every detailed category can be
-        # slow enough to time out for large menus.
         mappings = listing.get("item_mappings", [])
         if mappings:
+            categories = self._categories(listing)
+            # The listing gives the exact, orderable variant IDs but not prices.
+            # Fetch details in small batches so large menus do not turn into one
+            # slow request, then join detail fields back by variant ID.
+            category_batches = [categories[index : index + 4] for index in range(0, len(categories), 4)]
+            detail_responses = await asyncio.gather(
+                *(
+                    self._call_tool(
+                        "get_restaurant_menu_by_categories",
+                        {
+                            "res_id": res_id,
+                            "categories": batch,
+                            "address_id": resolved_address_id,
+                        },
+                    )
+                    for batch in category_batches
+                )
+            )
+            details_by_variant_id: dict[str, dict[str, Any]] = {}
+            for response in detail_responses:
+                for detail in response.get("menu_items", []):
+                    if not isinstance(detail, dict):
+                        continue
+                    variant_id = detail.get("variant_id")
+                    if variant_id:
+                        details_by_variant_id[str(variant_id)] = detail
+                    for variant in detail.get("variants") or []:
+                        if isinstance(variant, dict) and variant.get("variant_id"):
+                            details_by_variant_id[str(variant["variant_id"])] = {
+                                **detail,
+                                **variant,
+                            }
+
             items: list[MenuItem] = []
             seen_variant_ids: set[str] = set()
             for item in mappings:
@@ -390,14 +422,19 @@ class ZomatoProvider(BaseProvider):
                 if variant_id in seen_variant_ids:
                     continue
                 seen_variant_ids.add(variant_id)
+                detail = details_by_variant_id.get(variant_id, {})
                 items.append(
                     MenuItem(
                         id=variant_id,
-                        name=item.get("item_name", ""),
-                        price=float(item.get("price", 0)),
+                        name=detail.get("name") or item.get("item_name", ""),
+                        price=float(detail.get("discounted_price") or detail.get("price") or 0),
+                        description=detail.get("description", ""),
+                        is_veg=bool(detail.get("is_veg", True)),
+                        in_stock=bool(detail.get("in_stock", True)),
                         category=(item.get("categories") or [""])[0],
-                        variants=[item] if item.get("has_more_variants") else [],
-                        raw=item,
+                        variants=detail.get("variants") or [],
+                        addons=detail.get("available_add_ons") or [],
+                        raw={**item, **detail},
                     )
                 )
             return items
@@ -523,29 +560,73 @@ class ZomatoProvider(BaseProvider):
         return aliases[normalized]
 
     def _parse_cart(self, res: dict[str, Any]) -> Cart:
-        res_id = str(res.get("res_id", ""))
-        items_raw = res.get("items", [])
+        candidates = [
+            res,
+            res.get("data"),
+            res.get("cart"),
+            res.get("data", {}).get("cart") if isinstance(res.get("data"), dict) else None,
+        ]
+        cart_data = next(
+            (
+                candidate
+                for candidate in candidates
+                if isinstance(candidate, dict)
+                and ("items" in candidate or "cart_items" in candidate)
+            ),
+            res,
+        )
+        res_id = str(
+            cart_data.get("res_id")
+            or cart_data.get("restaurant_id")
+            or cart_data.get("restaurantId")
+            or ""
+        )
+        items_raw = cart_data.get("items") or cart_data.get("cart_items") or []
         parsed_items: list[CartItem] = []
         for it in items_raw:
             parsed_items.append(
                 CartItem(
-                    item_id=str(it.get("item_id") or it.get("id")),
+                    item_id=str(
+                        it.get("variant_id")
+                        or it.get("menu_item_id")
+                        or it.get("item_id")
+                        or it.get("id")
+                    ),
                     name=it.get("name", ""),
-                    price=float(it.get("price", 0)),
+                    price=float(
+                        it.get("final_price")
+                        or it.get("discounted_price")
+                        or it.get("price")
+                        or 0
+                    ),
                     quantity=int(it.get("quantity", 1)),
                 )
             )
 
-        bill = res.get("bill", {}) or res
+        bill = (
+            cart_data.get("pricing")
+            or cart_data.get("bill")
+            or cart_data.get("price_summary")
+            or cart_data
+        )
+        offers = cart_data.get("offers", {}) or {}
         return Cart(
             restaurant_id=res_id,
             items=parsed_items,
-            item_total=float(bill.get("item_total", 0)),
-            delivery_fee=float(bill.get("delivery_fee", 0)),
-            taxes=float(bill.get("taxes", 0)),
-            discount=float(bill.get("discount", 0)),
-            grand_total=float(bill.get("grand_total") or bill.get("total", 0)),
-            raw=res,
+            item_total=float(bill.get("item_total") or bill.get("itemTotal") or 0),
+            delivery_fee=float(
+                bill.get("delivery_fee") or bill.get("delivery_charge") or 0
+            ),
+            taxes=float(bill.get("taxes") or bill.get("taxes_and_charges") or 0),
+            discount=float(offers.get("coupon_discount") or bill.get("discount") or 0),
+            grand_total=float(
+                bill.get("grand_total")
+                or bill.get("grandTotal")
+                or bill.get("to_pay")
+                or bill.get("total")
+                or 0
+            ),
+            raw=cart_data,
         )
 
     # --- Checkout & Payments ---

@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 
 import httpx
 
-from foodie.keyring import SecretStore
+from foodie.secret_store import SecretStore
 from foodie.models import (
     Address,
     Cart,
@@ -57,7 +57,7 @@ class SwiggyProvider(BaseProvider):
     # --- Authentication ---
 
     async def _get_tokens(self) -> dict[str, Any] | None:
-        raw = await self.store.get_credential(self.SERVICE_KEY, self.ACCOUNT_KEY)
+        raw = await self.store.get_credential(self.SERVICE_KEY, self.ACCOUNT_KEY, self.name)
         if not raw:
             return None
         try:
@@ -70,7 +70,7 @@ class SwiggyProvider(BaseProvider):
             self.SERVICE_KEY,
             self.ACCOUNT_KEY,
             json.dumps(tokens),
-            label="Swiggy MCP Session Tokens",
+            label=self.name,
         )
 
     async def is_authenticated(self) -> bool:
@@ -109,7 +109,7 @@ class SwiggyProvider(BaseProvider):
         return auth_url, code_verifier
 
     async def _get_or_register_client(self, redirect_uri: str) -> str:
-        raw_info = await self.store.get_credential(self.SERVICE_KEY, self.CLIENT_INFO_KEY)
+        raw_info = await self.store.get_credential(self.SERVICE_KEY, self.CLIENT_INFO_KEY, self.name)
         if raw_info:
             try:
                 info = json.loads(raw_info)
@@ -135,6 +135,7 @@ class SwiggyProvider(BaseProvider):
                 self.SERVICE_KEY,
                 self.CLIENT_INFO_KEY,
                 json.dumps({"client_id": client_id, "redirect_uri": redirect_uri}),
+                self.name
             )
             return client_id
 
@@ -189,7 +190,7 @@ class SwiggyProvider(BaseProvider):
         return True
 
     async def logout(self) -> None:
-        await self.store.delete_credential(self.SERVICE_KEY, self.ACCOUNT_KEY)
+        await self.store.delete_credential(self.SERVICE_KEY, self.ACCOUNT_KEY, self.name)
 
     # --- Tool Call Bridge (JSON-RPC) ---
 
