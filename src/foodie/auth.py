@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import webbrowser
-from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from foodie.providers.base import BaseProvider
@@ -64,15 +63,23 @@ async def authenticate_interactive(
                     return
 
                 elif "error" in query:
-                    err_msg = query.get("error_description", query.get("error", ["Unknown error"]))[0]
+                    err_msg = query.get(
+                        "error_description", query.get("error", ["Unknown error"])
+                    )[0]
                     if not code_future.done():
-                        code_future.set_exception(RuntimeError(f"OAuth error: {err_msg}"))
+                        code_future.set_exception(
+                            RuntimeError(f"OAuth error: {err_msg}")
+                        )
                     body = f"<html><body><h2>Authentication failed: {err_msg}</h2></body></html>"
-                    writer.write(f"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n{body}".encode())
+                    writer.write(
+                        f"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n{body}".encode()
+                    )
                     await writer.drain()
                     return
 
-            writer.write(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\nNot Found")
+            writer.write(
+                b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\nNot Found"
+            )
             await writer.drain()
         except Exception as exc:
             logger.warning("Error in auth callback handler: %s", exc)
@@ -89,7 +96,7 @@ async def authenticate_interactive(
     print("\n" + "=" * 60)
     print(f"🔑 Authenticating with {provider.display_name}")
     print("=" * 60)
-    print(f"\nOpening browser... If it does not open automatically, visit:")
+    print("\nOpening browser... If it does not open automatically, visit:")
     print(f"\n👉 {auth_url}\n")
     print(f"Waiting for authentication (timeout: {int(timeout)}s)...")
 
@@ -97,17 +104,17 @@ async def authenticate_interactive(
 
     try:
         code = await asyncio.wait_for(code_future, timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         print("\n❌ Authentication timed out. No authorization code received.")
         return False
     finally:
         server.close()
         await server.wait_closed()
 
-    print(f"✓ Authorization code received. Exchanging for tokens...")
+    print("✓ Authorization code received. Exchanging for tokens...")
     success = await provider.complete_auth(code, verifier, redirect_uri)
     if success:
-        print(f"✓ Tokens received and stored securely in D-Bus keyring!")
+        print("✓ Tokens received and stored securely in D-Bus keyring!")
     else:
-        print(f"❌ Failed to exchange authorization code for tokens.")
+        print("❌ Failed to exchange authorization code for tokens.")
     return success

@@ -72,7 +72,8 @@ class SwiggyProvider(BaseProvider):
             return None
 
     async def _save_tokens(
-        self, tokens: dict[str, Any]  # pyright: ignore[reportExplicitAny]
+        self,
+        tokens: dict[str, Any],  # pyright: ignore[reportExplicitAny]
     ) -> None:
         await self.store.set_credential(
             self.SERVICE_KEY,
@@ -126,9 +127,7 @@ class SwiggyProvider(BaseProvider):
         )
         if raw_info:
             try:
-                info: dict[str, Any] = json.loads(
-                    raw_info
-                )  # pyright: ignore[reportExplicitAny, reportAny]
+                info: dict[str, Any] = json.loads(raw_info)  # pyright: ignore[reportExplicitAny, reportAny]
                 if info.get("redirect_uri") == redirect_uri and "client_id" in info:
                     return str(info["client_id"])  # pyright: ignore[reportAny]
             except Exception:
@@ -145,9 +144,7 @@ class SwiggyProvider(BaseProvider):
             },
         )
         if resp.status_code in (200, 201):
-            data: dict[str, Any] = (
-                resp.json()
-            )  # pyright: ignore[reportExplicitAny, reportAny]
+            data: dict[str, Any] = resp.json()  # pyright: ignore[reportExplicitAny, reportAny]
             client_id = cast(str, data.get("client_id", "foodie-client"))
             await self.store.set_credential(
                 self.SERVICE_KEY,
@@ -174,9 +171,7 @@ class SwiggyProvider(BaseProvider):
         if resp.status_code != 200:
             return False
 
-        data: dict[str, Any] = (
-            resp.json()
-        )  # pyright: ignore[reportAny, reportExplicitAny]
+        data: dict[str, Any] = resp.json()  # pyright: ignore[reportAny, reportExplicitAny]
         expires_in = cast(int, data.get("expires_in", 432000))
         tokens = {
             "access_token": data.get("access_token"),
@@ -202,9 +197,7 @@ class SwiggyProvider(BaseProvider):
         if resp.status_code != 200:
             return False
 
-        data: dict[str, Any] = (
-            resp.json()
-        )  # pyright: ignore[reportAny, reportExplicitAny]
+        data: dict[str, Any] = resp.json()  # pyright: ignore[reportAny, reportExplicitAny]
         expires_in = cast(int, data.get("expires_in", 2592000))
         tokens["access_token"] = data.get("access_token")
         if "refresh_token" in data:
@@ -260,9 +253,7 @@ class SwiggyProvider(BaseProvider):
                 f"Swiggy tool call failed ({resp.status_code}): {resp.text}"
             )
 
-        content_type = resp.headers.get(
-            "content-type", ""
-        )  # pyright: ignore[reportAny]
+        content_type = resp.headers.get("content-type", "")  # pyright: ignore[reportAny]
         if "text/event-stream" in content_type:
             res_json = self._parse_sse(resp.text, payload["id"])
         else:
@@ -288,7 +279,8 @@ class SwiggyProvider(BaseProvider):
 
     @staticmethod
     def _parse_sse(
-        body: str, request_id: Any  # pyright: ignore[reportAny, reportExplicitAny]
+        body: str,
+        request_id: Any,  # pyright: ignore[reportAny, reportExplicitAny]
     ) -> dict[str, Any]:  # pyright: ignore[reportExplicitAny]
         """Select the JSON-RPC response for this request from an SSE stream.
 
@@ -308,9 +300,7 @@ class SwiggyProvider(BaseProvider):
                 continue
             if not isinstance(message, dict):
                 continue
-            if (
-                message.get("id") == request_id
-            ):  # pyright: ignore[reportUnknownMemberType]
+            if message.get("id") == request_id:  # pyright: ignore[reportUnknownMemberType]
                 return message  # pyright: ignore[reportUnknownVariableType]
             if fallback is None and ("result" in message or "error" in message):
                 fallback = message  # pyright: ignore[reportUnknownVariableType]
@@ -321,7 +311,8 @@ class SwiggyProvider(BaseProvider):
 
     @staticmethod
     def _unwrap_result(  # pyright: ignore[reportAny]
-        tool_name: str, result: Any  # pyright: ignore[reportAny, reportExplicitAny]
+        tool_name: str,
+        result: Any,  # pyright: ignore[reportAny, reportExplicitAny]
     ) -> Any:  # pyright: ignore[reportExplicitAny]
         """Normalize an MCP tool result while preserving tool payloads.
 
@@ -378,9 +369,7 @@ class SwiggyProvider(BaseProvider):
     @override
     async def get_addresses(self) -> list[Address]:
         res = await self._call_tool("get_addresses", {})
-        addresses_raw: list[dict[str, Any]] = res.get(
-            "addresses", []
-        )  # pyright: ignore[reportExplicitAny, reportAny]
+        addresses_raw: list[dict[str, Any]] = res.get("addresses", [])  # pyright: ignore[reportExplicitAny, reportAny]
         addresses: list[Address] = []
         for a in addresses_raw:
             addr_id = str(a.get("id") or a.get("addressId") or "")

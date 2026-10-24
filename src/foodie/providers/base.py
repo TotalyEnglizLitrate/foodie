@@ -130,7 +130,10 @@ class BaseProvider(ABC):
 
     @abstractmethod
     async def place_order(
-        self, payment_method: str, address_id: str, **kwargs: Any
+        self,
+        payment_method: str,
+        address_id: str,
+        **kwargs: Any,  # pyright: ignore[reportAny, reportExplicitAny]
     ) -> OrderPlacement:
         """
         Place the order. For COD, order is placed immediately.
@@ -139,12 +142,20 @@ class BaseProvider(ABC):
         ...
 
     @abstractmethod
-    async def check_payment_status(self, order_id: str, **kwargs: Any) -> dict[str, Any]:
+    async def check_payment_status(
+        self,
+        order_id: str,
+        **kwargs: Any,  # pyright: ignore[reportExplicitAny, reportAny]
+    ) -> dict[str, Any]:  # pyright: ignore[reportExplicitAny]
         """Check payment status iteration for in-flight UPI payments."""
         ...
 
     @abstractmethod
-    async def confirm_order(self, order_id: str, **kwargs: Any) -> OrderSummary:
+    async def confirm_order(
+        self,
+        order_id: str,
+        **kwargs: Any,  # pyright: ignore[reportAny, reportExplicitAny]
+    ) -> OrderSummary:
         """Confirm and finalize the order after payment has succeeded."""
         ...
 

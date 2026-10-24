@@ -27,15 +27,20 @@ class SecretStore:
     def _service_name(cls, service: str, label: str) -> str:
         return f"{service}{cls.SEPARATOR}{label}"
 
-    async def set_credential(self, service: str, user: str, secret: str, label: str) -> None:
+    async def set_credential(
+        self, service: str, user: str, secret: str, label: str
+    ) -> None:
         await asyncio.to_thread(
             keyring.set_password, self._service_name(service, label), user, secret
         )
 
     async def get_credential(self, service: str, user: str, label: str) -> str | None:
-        return await asyncio.to_thread(
-            keyring.get_password, self._service_name(service, label), user
-        ) or "{}"
+        return (
+            await asyncio.to_thread(
+                keyring.get_password, self._service_name(service, label), user
+            )
+            or "{}"
+        )
 
     async def delete_credential(self, service: str, user: str, label: str) -> bool:
         deleted = False

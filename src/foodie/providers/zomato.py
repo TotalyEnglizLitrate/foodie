@@ -7,12 +7,11 @@ import json
 import re
 import secrets
 import time
-from typing import Any
+from typing import Any, cast, override
 from urllib.parse import urlencode
 
 import httpx
 
-from foodie.secret_store import SecretStore
 from foodie.models import (
     Address,
     Cart,
@@ -27,6 +26,7 @@ from foodie.models import (
     Restaurant,
 )
 from foodie.providers.base import BaseProvider
+from foodie.secret_store import SecretStore
 
 
 class ZomatoToolError(RuntimeError):
@@ -39,11 +39,14 @@ class ZomatoToolError(RuntimeError):
 
     def __init__(self, message: str, code: str | None = None) -> None:
         super().__init__(f"Zomato tool error{f' [{code}]' if code else ''}: {message}")
-        self.code = code
-        self.message = message
+        self.code: str | None = code
+        self.message: str = message
 
 
-def _num(value: Any, default: float = 0.0) -> float:
+def _num(
+    value: Any,
+    default: float = 0.0,  # pyright: ignore[reportAny, reportExplicitAny]
+) -> float:
     """Coerce numbers / numeric strings (e.g. '₹1,250.50') to float."""
     if value is None or isinstance(value, bool):
         return default
@@ -53,7 +56,9 @@ def _num(value: Any, default: float = 0.0) -> float:
     return float(match.group().replace(",", "")) if match else default
 
 
-def _int_or_none(value: Any) -> int | None:
+def _int_or_none(
+    value: Any,  # pyright: ignore[reportAny, reportExplicitAny]
+) -> int | None:
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, int):
@@ -62,21 +67,38 @@ def _int_or_none(value: Any) -> int | None:
     return int(match.group()) if match else None
 
 
-def _flag(value: Any, default: bool) -> bool:
+def _flag(
+    value: Any,
+    default: bool,  # pyright: ignore[reportAny, reportExplicitAny]
+) -> bool:
     """Schema booleans are frequently nullable; null means 'unknown', not False."""
     return default if value is None else bool(value)
 
 
-def _status_from_text(text: str | None, *, paid: bool | None = None, placed: bool | None = None) -> OrderStatus:
+def _status_from_text(
+    text: str | None, *, paid: bool | None = None, placed: bool | None = None
+) -> OrderStatus:
     """Map Zomato's free-form ``order_status`` string onto OrderStatus."""
     t = (text or "").lower()
     if "cancel" in t or "reject" in t:
         return OrderStatus.CANCELLED
     if "fail" in t:
         return OrderStatus.FAILED
-    if "deliver" in t and not any(w in t for w in ("out", "way", "pick", "being", "partner")):
+    if "deliver" in t and not any(
+        w in t for w in ("out", "way", "pick", "being", "partner")
+    ):
         return OrderStatus.DELIVERED
-    if any(w in t for w in ("out for", "on the way", "on its way", "being deliver", "picked", "arriv")):
+    if any(
+        w in t
+        for w in (
+            "out for",
+            "on the way",
+            "on its way",
+            "being deliver",
+            "picked",
+            "arriv",
+        )
+    ):
         return OrderStatus.OUT_FOR_DELIVERY
     if any(w in t for w in ("prepar", "cook", "ready")):
         return OrderStatus.PREPARING
@@ -93,41 +115,45 @@ class ZomatoProvider(BaseProvider):
     at https://mcp-server.zomato.com/mcp using OAuth 2.1 PKCE and D-Bus credential storage.
     """
 
-    BASE_URL = "https://mcp-server.zomato.com"
-    MCP_ENDPOINT = "https://mcp-server.zomato.com/mcp"
-    SERVICE_KEY = "foodie-zomato"
-    ACCOUNT_KEY = "tokens"
-    CLIENT_INFO_KEY = "client_info"
+    BASE_URL: str = "https://mcp-server.zomato.com"
+    MCP_ENDPOINT: str = "https://mcp-server.zomato.com/mcp"
+    SERVICE_KEY: str = "foodie"
+    ACCOUNT_KEY: str = "tokens"
+    CLIENT_INFO_KEY: str = "client_info"
 
     def __init__(self, store: SecretStore | None = None) -> None:
-        self.store = store or SecretStore()
-        self._http = httpx.AsyncClient(timeout=30.0)
+        self.store: SecretStore = store or SecretStore()
+        self._http: httpx.AsyncClient = httpx.AsyncClient(timeout=30.0)
         self._active_address_id: str | None = None
-        self._cart_response: dict[str, Any] | None = None
+        self._cart_response: dict[str, Any] | None = None  # pyright: ignore[reportExplicitAny]
         self._cart_payment_type: str | None = None
         self._cart_restaurant_id: int | None = None
         self._order_totals: dict[str, float] = {}
 
     @property
+    @override
     def name(self) -> ProviderName:
         return ProviderName.ZOMATO
 
     @property
+    @override
     def display_name(self) -> str:
         return "Zomato"
 
-    # --- Authentication Lifecycle ---
-
-    async def _get_tokens(self) -> dict[str, Any] | None:
-        raw = await self.store.get_credential(self.SERVICE_KEY, self.ACCOUNT_KEY, self.name)
+    async def _get_tokens(
+        self,
+    ) -> dict[str, Any] | None:  # pyright: ignore[reportExplicitAny]
+        raw = await self.store.get_credential(
+            self.SERVICE_KEY, self.ACCOUNT_KEY, self.name
+        )
         if not raw:
             return None
         try:
-            return json.loads(raw)
+            return json.loads(raw)  # pyright: ignore[reportAny]
         except Exception:
             return None
 
-    async def _save_tokens(self, tokens: dict[str, Any]) -> None:
+    async def _save_tokens(self, tokens: dict[str, Any]) -> None:  # pyright: ignore[reportExplicitAny]
         await self.store.set_credential(
             self.SERVICE_KEY,
             self.ACCOUNT_KEY,
@@ -135,21 +161,25 @@ class ZomatoProvider(BaseProvider):
             self.name,
         )
 
+    @override
     async def is_authenticated(self) -> bool:
         tokens = await self._get_tokens()
         if not tokens or "access_token" not in tokens:
             return False
 
-        expires_at = tokens.get("expires_at", 0)
+        expires_at = cast(int, tokens.get("expires_at", 0))
         if time.time() >= expires_at - 60:
             return await self.refresh_auth()
 
         return True
 
+    @override
     async def get_auth_url(self, redirect_uri: str) -> tuple[str, str]:
         # Generate PKCE verifier + challenge (S256)
         verifier_bytes = secrets.token_bytes(32)
-        code_verifier = base64.urlsafe_b64encode(verifier_bytes).decode("utf-8").rstrip("=")
+        code_verifier = (
+            base64.urlsafe_b64encode(verifier_bytes).decode("utf-8").rstrip("=")
+        )
         digest = hashlib.sha256(code_verifier.encode("utf-8")).digest()
         code_challenge = base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
 
@@ -171,12 +201,16 @@ class ZomatoProvider(BaseProvider):
         return auth_url, code_verifier
 
     async def _get_or_register_client(self, redirect_uri: str) -> tuple[str, str]:
-        raw_info = await self.store.get_credential(self.SERVICE_KEY, self.CLIENT_INFO_KEY, self.name)
+        raw_info = await self.store.get_credential(
+            self.SERVICE_KEY, self.CLIENT_INFO_KEY, self.name
+        )
         if raw_info:
             try:
                 info = json.loads(raw_info)
                 if info.get("redirect_uri") == redirect_uri and "client_id" in info:
-                    return str(info["client_id"]), str(info.get("client_secret", "Z-MCP"))
+                    return str(info["client_id"]), str(
+                        info.get("client_secret", "Z-MCP")
+                    )
             except Exception:
                 pass
 
@@ -203,12 +237,13 @@ class ZomatoProvider(BaseProvider):
                         "redirect_uri": redirect_uri,
                     }
                 ),
-                self.name
+                self.name,
             )
             return client_id, client_secret
 
         return "foodie-client", "Z-MCP"
 
+    @override
     async def complete_auth(self, code: str, verifier: str, redirect_uri: str) -> bool:
         client_id, client_secret = await self._get_or_register_client(redirect_uri)
         # Zomato /token follows OAuth 2.1 spec: application/x-www-form-urlencoded
@@ -234,6 +269,7 @@ class ZomatoProvider(BaseProvider):
         await self._save_tokens(tokens)
         return True
 
+    @override
     async def refresh_auth(self) -> bool:
         tokens = await self._get_tokens()
         if not tokens or "refresh_token" not in tokens:
@@ -257,12 +293,17 @@ class ZomatoProvider(BaseProvider):
         await self._save_tokens(tokens)
         return True
 
+    @override
     async def logout(self) -> None:
-        await self.store.delete_credential(self.SERVICE_KEY, self.ACCOUNT_KEY, self.name)
+        await self.store.delete_credential(
+            self.SERVICE_KEY, self.ACCOUNT_KEY, self.name
+        )
 
     # --- Tool Call Bridge (JSON-RPC over Streamable HTTP) ---
 
-    async def _call_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def _call_tool(
+        self, tool_name: str, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
         tokens = await self._get_tokens()
         if not tokens or not tokens.get("access_token"):
             raise PermissionError("Not authenticated with Zomato. Please login first.")
@@ -286,13 +327,18 @@ class ZomatoProvider(BaseProvider):
             refreshed = await self.refresh_auth()
             if refreshed:
                 tokens = await self._get_tokens()
+                assert tokens is not None
                 headers["Authorization"] = f"Bearer {tokens['access_token']}"
-                resp = await self._http.post(self.MCP_ENDPOINT, json=payload, headers=headers)
+                resp = await self._http.post(
+                    self.MCP_ENDPOINT, json=payload, headers=headers
+                )
             else:
                 raise PermissionError("Zomato session expired. Please re-authenticate.")
 
         if resp.status_code >= 400:
-            raise RuntimeError(f"Zomato tool call failed ({resp.status_code}): {resp.text}")
+            raise RuntimeError(
+                f"Zomato tool call failed ({resp.status_code}): {resp.text}"
+            )
 
         content_type = resp.headers.get("content-type", "")
         if "text/event-stream" in content_type:
@@ -301,7 +347,9 @@ class ZomatoProvider(BaseProvider):
             res_json = resp.json()
 
         if not isinstance(res_json, dict):
-            raise RuntimeError(f"Zomato returned a malformed response for {tool_name}: {res_json!r}")
+            raise RuntimeError(
+                f"Zomato returned a malformed response for {tool_name}: {res_json!r}"
+            )
 
         if "error" in res_json:
             err = res_json["error"]
@@ -359,7 +407,9 @@ class ZomatoProvider(BaseProvider):
         ]
 
         if result.get("isError"):
-            raise ZomatoToolError("\n".join(text_parts).strip() or f"{tool_name} failed")
+            raise ZomatoToolError(
+                "\n".join(text_parts).strip() or f"{tool_name} failed"
+            )
 
         payload: Any = result.get("structuredContent")
         if payload is None:
@@ -380,20 +430,25 @@ class ZomatoProvider(BaseProvider):
                 payload.get("success") is False and payload.get("error_message")
             ):
                 raise ZomatoToolError(
-                    str(payload.get("error_message") or payload.get("message") or "unknown error"),
+                    str(
+                        payload.get("error_message")
+                        or payload.get("message")
+                        or "unknown error"
+                    ),
                     payload.get("error_code"),
                 )
             if isinstance(payload.get("data"), dict):
                 return payload["data"]
         return payload
 
-    # --- Addresses ---
-
+    @override
     async def get_addresses(self) -> list[Address]:
         # Contract: {"addresses": [{"address_id": str | null, "location_name": str}]}.
         # Coordinates and structured lines are not part of this tool's output.
         res = await self._call_tool("get_saved_addresses_for_user", {})
-        addresses_raw = res.get("addresses") or [] if isinstance(res, dict) else res or []
+        addresses_raw = (
+            res.get("addresses") or [] if isinstance(res, dict) else res or []
+        )
         addresses: list[Address] = []
         for a in addresses_raw:
             if not isinstance(a, dict) or not a.get("address_id"):
@@ -410,14 +465,15 @@ class ZomatoProvider(BaseProvider):
             )
         return addresses
 
-    # --- Discovery & Menu ---
-
+    @override
     async def search_restaurants(self, query: str, address_id: str) -> list[Restaurant]:
         self._active_address_id = address_id
         args = {"keyword": query, "address_id": address_id}
         res = await self._call_tool("get_restaurants_for_keyword", args)
         # Contract: {"results": [...], "postback_params": {...}}
-        restaurants_raw = (res.get("results") or []) if isinstance(res, dict) else res or []
+        restaurants_raw = (
+            (res.get("results") or []) if isinstance(res, dict) else res or []
+        )
         restaurants: list[Restaurant] = []
         for r in restaurants_raw:
             if not isinstance(r, dict) or r.get("res_id") is None:
@@ -433,7 +489,11 @@ class ZomatoProvider(BaseProvider):
                     rating=float(rating) if rating else None,
                     # `eta` is a string such as "30 mins" / "25-30 mins".
                     delivery_time_mins=_int_or_none(r.get("eta")),
-                    distance_km=_num(r.get("distance")) if r.get("distance") is not None else None,
+                    distance_km=(
+                        _num(r.get("distance"))
+                        if r.get("distance") is not None
+                        else None
+                    ),
                     cost_for_two=None,
                     is_open=r.get("serviceability_status") != "unserviceable",
                     image_url=r.get("res_image"),
@@ -479,12 +539,21 @@ class ZomatoProvider(BaseProvider):
                     for item in items
                     if isinstance(item, dict)
                 ]
-        return list(dict.fromkeys(
-            str(category.get("name") or category.get("category_name") or category.get("id"))
-            if isinstance(category, dict) else str(category)
-            for category in candidates
-            if category
-        ))
+        return list(
+            dict.fromkeys(
+                (
+                    str(
+                        category.get("name")
+                        or category.get("category_name")
+                        or category.get("id")
+                    )
+                    if isinstance(category, dict)
+                    else str(category)
+                )
+                for category in candidates
+                if category
+            )
+        )
 
     @staticmethod
     def _addon_groups(response: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -496,7 +565,9 @@ class ZomatoProvider(BaseProvider):
         }
 
     @staticmethod
-    def _merge_variant(detail: dict[str, Any], variant: dict[str, Any]) -> dict[str, Any]:
+    def _merge_variant(
+        detail: dict[str, Any], variant: dict[str, Any]
+    ) -> dict[str, Any]:
         """Overlay a variant onto its parent item without letting nulls win.
 
         Price fields are the exception: they belong to the variant, so a null
@@ -554,6 +625,7 @@ class ZomatoProvider(BaseProvider):
             )
         )
 
+    @override
     async def get_menu(
         self, restaurant_id: str, address_id: str | None = None
     ) -> list[MenuItem]:
@@ -586,7 +658,9 @@ class ZomatoProvider(BaseProvider):
         categories = self._categories(listing)
         if not categories:
             return []
-        responses = await self._fetch_menu_details(res_id, categories, resolved_address_id)
+        responses = await self._fetch_menu_details(
+            res_id, categories, resolved_address_id
+        )
 
         groups: dict[str, dict[str, Any]] = {}
         details_by_variant_id: dict[str, dict[str, Any]] = {}
@@ -603,8 +677,8 @@ class ZomatoProvider(BaseProvider):
                     details_by_variant_id[str(detail["variant_id"])] = detail
                 for variant in detail.get("variants") or []:
                     if isinstance(variant, dict) and variant.get("variant_id"):
-                        details_by_variant_id[str(variant["variant_id"])] = self._merge_variant(
-                            detail, variant
+                        details_by_variant_id[str(variant["variant_id"])] = (
+                            self._merge_variant(detail, variant)
                         )
 
         mappings = listing.get("item_mappings") or []
@@ -615,7 +689,9 @@ class ZomatoProvider(BaseProvider):
                 if not isinstance(mapping, dict) or not mapping.get("variant_id"):
                     continue
                 variant_id = str(mapping["variant_id"])
-                detail = details_by_variant_id.get(variant_id) or {"variant_id": variant_id}
+                detail = details_by_variant_id.get(variant_id) or {
+                    "variant_id": variant_id
+                }
                 add(
                     self._menu_item(
                         detail,
@@ -631,6 +707,7 @@ class ZomatoProvider(BaseProvider):
             add(self._menu_item(detail, addon_groups=groups))
         return items
 
+    @override
     async def search_menu(
         self, restaurant_id: str, query: str, address_id: str | None = None
     ) -> list[MenuItem]:
@@ -642,8 +719,6 @@ class ZomatoProvider(BaseProvider):
             for item in all_items
             if q in item.name.lower() or q in (item.description or "").lower()
         ]
-
-    # --- Cart Operations ---
 
     @staticmethod
     def _extract_cart(res: Any) -> dict[str, Any]:
@@ -657,9 +732,12 @@ class ZomatoProvider(BaseProvider):
             cart = res.get("cart")
             if isinstance(cart, dict) and res.get("success") is not False:
                 return cart
-            raise ZomatoToolError(str(res.get("message") or "Zomato did not return a cart."))
+            raise ZomatoToolError(
+                str(res.get("message") or "Zomato did not return a cart.")
+            )
         raise ZomatoToolError("Zomato returned an unexpected cart response.")
 
+    @override
     async def get_cart(self, address_id: str | None = None) -> Cart:
         # Zomato exposes no read-cart tool; create_cart returns the authoritative
         # cart payload, so retain that cart for the current provider session.
@@ -669,6 +747,7 @@ class ZomatoProvider(BaseProvider):
             raise RuntimeError("Zomato has no cart-read endpoint; create a cart first.")
         return self._parse_cart(self._cart_response)
 
+    @override
     async def update_cart(
         self,
         restaurant_id: str,
@@ -677,14 +756,18 @@ class ZomatoProvider(BaseProvider):
         payment_method: str | None = None,
     ) -> Cart:
         if not items:
-            raise ValueError("Zomato carts need at least one item; use clear_cart() to discard the cart.")
+            raise ValueError(
+                "Zomato carts need at least one item; use clear_cart() to discard the cart."
+            )
         for it in items:
             if not str(it.item_id).startswith("v_"):
                 raise ValueError(
                     f"Zomato cart items must use orderable variant IDs ('v_...'), got {it.item_id!r}."
                 )
             if it.quantity < 1:
-                raise ValueError(f"Invalid quantity {it.quantity} for item {it.item_id!r}.")
+                raise ValueError(
+                    f"Invalid quantity {it.quantity} for item {it.item_id!r}."
+                )
 
         payload_items = [
             {
@@ -717,6 +800,7 @@ class ZomatoProvider(BaseProvider):
         self._cart_restaurant_id = res_id
         return self._parse_cart(cart)
 
+    @override
     async def clear_cart(self) -> None:
         # Zomato has no delete/flush-cart tool. A cart only exists server-side as
         # the snapshot create_cart returned, and is never charged until
@@ -726,8 +810,11 @@ class ZomatoProvider(BaseProvider):
         self._cart_payment_type = None
         self._cart_restaurant_id = None
 
+    @override
     async def apply_coupon(self, code: str, address_id: str | None = None) -> Cart:
-        raise NotImplementedError("Zomato MCP does not expose a coupon-application tool.")
+        raise NotImplementedError(
+            "Zomato MCP does not expose a coupon-application tool."
+        )
 
     def _payment_type(self, payment_method: str | None) -> str:
         normalized = (payment_method or "").lower()
@@ -739,7 +826,9 @@ class ZomatoProvider(BaseProvider):
             "cash_on_delivery": "cash_on_delivery",
         }
         if normalized not in aliases:
-            raise ValueError("Zomato cart requires payment_method 'upi' or 'cash_on_delivery'.")
+            raise ValueError(
+                "Zomato cart requires payment_method 'upi' or 'cash_on_delivery'."
+            )
         return aliases[normalized]
 
     def _parse_cart(self, cart: dict[str, Any]) -> Cart:
@@ -763,18 +852,28 @@ class ZomatoProvider(BaseProvider):
                     name=item.get("name", ""),
                     price=_num(item.get("discounted_price") or item.get("price")),
                     quantity=int(entry.get("quantity") or 1),
-                    selected_addons=[dict(a) for a in entry.get("add_ons") or [] if isinstance(a, dict)],
+                    selected_addons=[
+                        dict(a)
+                        for a in entry.get("add_ons") or []
+                        if isinstance(a, dict)
+                    ],
                 )
             )
 
         breakdown = cart.get("charge_breakdown") or {}
-        base_charges = [c for c in breakdown.get("base_charges") or [] if isinstance(c, dict)]
+        base_charges = [
+            c for c in breakdown.get("base_charges") or [] if isinstance(c, dict)
+        ]
         delivery_fee = sum(
             _num(c.get("amount"))
             for c in base_charges
             if "deliver" in str(c.get("charge_type", "")).lower()
         )
-        taxes = sum(_num(t.get("tax_amount")) for t in breakdown.get("taxes") or [] if isinstance(t, dict))
+        taxes = sum(
+            _num(t.get("tax_amount"))
+            for t in breakdown.get("taxes") or []
+            if isinstance(t, dict)
+        )
         if cart.get("promo_discount_amount") is not None:
             discount = _num(cart["promo_discount_amount"])
         else:
@@ -793,16 +892,18 @@ class ZomatoProvider(BaseProvider):
             raw=cart,
         )
 
-    # --- Checkout & Payments ---
-
+    @override
     async def get_payment_options(self, address_id: str) -> list[PaymentMethod]:
         self._active_address_id = address_id
         # Zomato MCP checkout uses UPI QR or online link
         return [
-            PaymentMethod(id="UPI_QR", name="UPI QR Code (Scan to pay)", method_type="UPI_QR"),
+            PaymentMethod(
+                id="UPI_QR", name="UPI QR Code (Scan to pay)", method_type="UPI_QR"
+            ),
             PaymentMethod(id="COD", name="Cash on Delivery", method_type="COD"),
         ]
 
+    @override
     async def place_order(
         self, payment_method: str, address_id: str, **kwargs: Any
     ) -> OrderPlacement:
@@ -813,23 +914,34 @@ class ZomatoProvider(BaseProvider):
             cart_id = self._cart_response.get("cart_id")
         if not cart_id:
             raise ValueError("Zomato checkout requires a cart_id from create_cart.")
-        args = {"cart_id": str(cart_id), "payment_method_type": self._payment_type(payment_method)}
+        args = {
+            "cart_id": str(cart_id),
+            "payment_method_type": self._payment_type(payment_method),
+        }
         res = await self._call_tool("checkout_cart", args)
 
         # Contract: {success, is_upi, qr_code (base64 image), upi_link, message,
         # order_id, final_payment_amount}. order_id is only set on success.
-        if not isinstance(res, dict) or not res.get("success") or not res.get("order_id"):
+        if (
+            not isinstance(res, dict)
+            or not res.get("success")
+            or not res.get("order_id")
+        ):
             msg = res.get("message") if isinstance(res, dict) else None
             raise ZomatoToolError(str(msg or "Zomato checkout failed."))
 
         order_id = str(res["order_id"])
         if res.get("final_payment_amount") is not None:
             self._order_totals[order_id] = _num(res["final_payment_amount"])
-        requires_payment = bool(res.get("is_upi") or res.get("upi_link") or res.get("qr_code"))
+        requires_payment = bool(
+            res.get("is_upi") or res.get("upi_link") or res.get("qr_code")
+        )
 
         return OrderPlacement(
             order_id=order_id,
-            status=OrderStatus.PENDING_PAYMENT if requires_payment else OrderStatus.PLACED,
+            status=(
+                OrderStatus.PENDING_PAYMENT if requires_payment else OrderStatus.PLACED
+            ),
             requires_payment=requires_payment,
             # `upi_link` is the payable UPI URI (render it as a QR); the base64
             # PNG from the server is left in `raw["qr_code"]`.
@@ -844,9 +956,15 @@ class ZomatoProvider(BaseProvider):
         Contract: input ``order_id`` is a string, but each output item's
         ``order_id`` is an *integer*, so ids must be compared as strings.
         """
-        res = await self._call_tool("get_order_tracking_info", {"order_id": str(order_id)})
+        res = await self._call_tool(
+            "get_order_tracking_info", {"order_id": str(order_id)}
+        )
         tracking = res.get("order_tracking") if isinstance(res, dict) else None
-        items = [i for i in (tracking or {}).get("order_tracking_items") or [] if isinstance(i, dict)]
+        items = [
+            i
+            for i in (tracking or {}).get("order_tracking_items") or []
+            if isinstance(i, dict)
+        ]
         for item in items:
             if str(item.get("order_id")) == str(order_id):
                 return item
@@ -854,7 +972,10 @@ class ZomatoProvider(BaseProvider):
             return items[0]
         raise LookupError(f"Zomato has no active order {order_id} to report on.")
 
-    async def check_payment_status(self, order_id: str, **kwargs: Any) -> dict[str, Any]:
+    @override
+    async def check_payment_status(
+        self, order_id: str, **kwargs: Any
+    ) -> dict[str, Any]:
         item = await self._tracking_item(order_id)
         return {
             "order_id": str(item.get("order_id", order_id)),
@@ -866,10 +987,13 @@ class ZomatoProvider(BaseProvider):
             "raw": item,
         }
 
+    @override
     async def confirm_order(self, order_id: str, **kwargs: Any) -> OrderSummary:
         item = await self._tracking_item(order_id)
         placed = item.get("is_order_placed")
-        status = _status_from_text(item.get("order_status"), paid=item.get("is_order_paid"), placed=placed)
+        status = _status_from_text(
+            item.get("order_status"), paid=item.get("is_order_paid"), placed=placed
+        )
         if status is OrderStatus.PLACED and placed:
             status = OrderStatus.CONFIRMED
         return OrderSummary(
@@ -881,8 +1005,7 @@ class ZomatoProvider(BaseProvider):
             raw=item,
         )
 
-    # --- History & Live Tracking ---
-
+    @override
     async def get_orders(self, address_id: str | None = None) -> list[OrderSummary]:
         res = await self._call_tool(
             "get_order_history", {"address_id": self._address_id(address_id)}
@@ -914,11 +1037,12 @@ class ZomatoProvider(BaseProvider):
             )
         return summaries
 
+    @override
     async def track_order(self, order_id: str) -> OrderTracking:
         item = await self._tracking_item(order_id)
-        rider = item.get("rider") or {}
+        rider: dict[str, Any] = item.get("rider") or {}  # pyright: ignore[reportExplicitAny]
         return OrderTracking(
-            order_id=str(item.get("order_id", order_id)),
+            order_id=str(cast(int, item.get("order_id", order_id))),
             status=_status_from_text(
                 item.get("order_status"),
                 paid=item.get("is_order_paid"),

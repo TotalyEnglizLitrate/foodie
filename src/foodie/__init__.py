@@ -1,5 +1,4 @@
 from foodie.auth import authenticate_interactive
-from foodie.secret_store import SecretStore
 from foodie.models import (
     Address,
     Cart,
@@ -16,9 +15,11 @@ from foodie.models import (
 from foodie.providers.base import BaseProvider
 from foodie.providers.swiggy import SwiggyProvider
 from foodie.providers.zomato import ZomatoProvider
+from foodie.secret_store import SecretStore
 
 __all__ = [
     "Address",
+    "BaseProvider",
     "Cart",
     "CartItem",
     "MenuItem",
@@ -29,9 +30,8 @@ __all__ = [
     "PaymentMethod",
     "ProviderName",
     "Restaurant",
-    "BaseProvider",
+    "SecretStore",
     "SwiggyProvider",
     "ZomatoProvider",
-    "SecretStore",
     "authenticate_interactive",
 ]
