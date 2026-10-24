@@ -6,12 +6,11 @@ import json
 import re
 import secrets
 import time
-from typing import Any
+from typing import Any, cast, override
 from urllib.parse import urlencode
 
 import httpx
 
-from foodie.secret_store import SecretStore
 from foodie.models import (
     Address,
     Cart,
@@ -26,6 +25,7 @@ from foodie.models import (
     Restaurant,
 )
 from foodie.providers.base import BaseProvider
+from foodie.secret_store import SecretStore
 
 
 class SwiggyProvider(BaseProvider):
@@ -34,38 +34,46 @@ class SwiggyProvider(BaseProvider):
     over Streamable HTTP / JSON-RPC with OAuth 2.1 PKCE session management.
     """
 
-    BASE_URL = "https://mcp.swiggy.com"
-    SERVICE_KEY = "foodie-swiggy"
-    ACCOUNT_KEY = "tokens"
-    CLIENT_INFO_KEY = "client_info"
-    MENU_PAGE_SIZE = 100
-    MAX_MENU_PAGES = 100
+    BASE_URL: str = "https://mcp.swiggy.com"
+    SERVICE_KEY: str = "foodie"
+    ACCOUNT_KEY: str = "tokens"
+    CLIENT_INFO_KEY: str = "client_info"
+    MENU_PAGE_SIZE: int = 8
+    MAX_MENU_PAGES: int = 100
 
     def __init__(self, store: SecretStore | None = None) -> None:
-        self.store = store or SecretStore()
-        self._http = httpx.AsyncClient(timeout=30.0)
+        self.store: SecretStore = store or SecretStore()
+        self._http: httpx.AsyncClient = httpx.AsyncClient(timeout=30.0)
         self._active_address_id: str | None = None
+        self._address_coords: dict[str, tuple[float, float]] = {}
+        self._order_contexts: dict[str, dict[str, Any]] = {}
 
     @property
+    @override
     def name(self) -> ProviderName:
         return ProviderName.SWIGGY
 
     @property
+    @override
     def display_name(self) -> str:
         return "Swiggy"
 
-    # --- Authentication ---
-
-    async def _get_tokens(self) -> dict[str, Any] | None:
-        raw = await self.store.get_credential(self.SERVICE_KEY, self.ACCOUNT_KEY, self.name)
+    async def _get_tokens(
+        self,
+    ) -> dict[str, Any] | None:  # pyright: ignore[reportExplicitAny]
+        raw = await self.store.get_credential(
+            self.SERVICE_KEY, self.ACCOUNT_KEY, self.name
+        )
         if not raw:
             return None
         try:
-            return json.loads(raw)
+            return json.loads(raw)  # pyright: ignore[reportAny]
         except Exception:
             return None
 
-    async def _save_tokens(self, tokens: dict[str, Any]) -> None:
+    async def _save_tokens(
+        self, tokens: dict[str, Any]  # pyright: ignore[reportExplicitAny]
+    ) -> None:
         await self.store.set_credential(
             self.SERVICE_KEY,
             self.ACCOUNT_KEY,
@@ -73,22 +81,26 @@ class SwiggyProvider(BaseProvider):
             label=self.name,
         )
 
+    @override
     async def is_authenticated(self) -> bool:
         tokens = await self._get_tokens()
         if not tokens or "access_token" not in tokens:
             return False
 
         # If expired or near expiration (within 60 seconds), attempt refresh
-        expires_at = tokens.get("expires_at", 0)
+        expires_at = tokens.get("expires_at", 0)  # pyright: ignore[reportAny]
         if time.time() >= expires_at - 60:
             return await self.refresh_auth()
 
         return True
 
+    @override
     async def get_auth_url(self, redirect_uri: str) -> tuple[str, str]:
         # Generate PKCE verifier + challenge (S256)
         verifier_bytes = secrets.token_bytes(32)
-        code_verifier = base64.urlsafe_b64encode(verifier_bytes).decode("utf-8").rstrip("=")
+        code_verifier = (
+            base64.urlsafe_b64encode(verifier_bytes).decode("utf-8").rstrip("=")
+        )
         digest = hashlib.sha256(code_verifier.encode("utf-8")).digest()
         code_challenge = base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
 
@@ -109,12 +121,16 @@ class SwiggyProvider(BaseProvider):
         return auth_url, code_verifier
 
     async def _get_or_register_client(self, redirect_uri: str) -> str:
-        raw_info = await self.store.get_credential(self.SERVICE_KEY, self.CLIENT_INFO_KEY, self.name)
+        raw_info = await self.store.get_credential(
+            self.SERVICE_KEY, self.CLIENT_INFO_KEY, self.name
+        )
         if raw_info:
             try:
-                info = json.loads(raw_info)
+                info: dict[str, Any] = json.loads(
+                    raw_info
+                )  # pyright: ignore[reportExplicitAny, reportAny]
                 if info.get("redirect_uri") == redirect_uri and "client_id" in info:
-                    return str(info["client_id"])
+                    return str(info["client_id"])  # pyright: ignore[reportAny]
             except Exception:
                 pass
 
@@ -129,19 +145,22 @@ class SwiggyProvider(BaseProvider):
             },
         )
         if resp.status_code in (200, 201):
-            data = resp.json()
-            client_id = data.get("client_id", "foodie-client")
+            data: dict[str, Any] = (
+                resp.json()
+            )  # pyright: ignore[reportExplicitAny, reportAny]
+            client_id = cast(str, data.get("client_id", "foodie-client"))
             await self.store.set_credential(
                 self.SERVICE_KEY,
                 self.CLIENT_INFO_KEY,
                 json.dumps({"client_id": client_id, "redirect_uri": redirect_uri}),
-                self.name
+                self.name,
             )
             return client_id
 
         # Fallback client identifier if DCR response doesn't return one
         return "foodie-client"
 
+    @override
     async def complete_auth(self, code: str, verifier: str, redirect_uri: str) -> bool:
         resp = await self._http.post(
             f"{self.BASE_URL}/auth/token",
@@ -155,8 +174,10 @@ class SwiggyProvider(BaseProvider):
         if resp.status_code != 200:
             return False
 
-        data = resp.json()
-        expires_in = data.get("expires_in", 432000)
+        data: dict[str, Any] = (
+            resp.json()
+        )  # pyright: ignore[reportAny, reportExplicitAny]
+        expires_in = cast(int, data.get("expires_in", 432000))
         tokens = {
             "access_token": data.get("access_token"),
             "refresh_token": data.get("refresh_token"),
@@ -165,6 +186,7 @@ class SwiggyProvider(BaseProvider):
         await self._save_tokens(tokens)
         return True
 
+    @override
     async def refresh_auth(self) -> bool:
         tokens = await self._get_tokens()
         if not tokens or "refresh_token" not in tokens:
@@ -180,8 +202,10 @@ class SwiggyProvider(BaseProvider):
         if resp.status_code != 200:
             return False
 
-        data = resp.json()
-        expires_in = data.get("expires_in", 2592000)
+        data: dict[str, Any] = (
+            resp.json()
+        )  # pyright: ignore[reportAny, reportExplicitAny]
+        expires_in = cast(int, data.get("expires_in", 2592000))
         tokens["access_token"] = data.get("access_token")
         if "refresh_token" in data:
             tokens["refresh_token"] = data.get("refresh_token")
@@ -189,19 +213,23 @@ class SwiggyProvider(BaseProvider):
         await self._save_tokens(tokens)
         return True
 
+    @override
     async def logout(self) -> None:
-        await self.store.delete_credential(self.SERVICE_KEY, self.ACCOUNT_KEY, self.name)
-
-    # --- Tool Call Bridge (JSON-RPC) ---
+        _ = await self.store.delete_credential(
+            self.SERVICE_KEY, self.ACCOUNT_KEY, self.name
+        )
 
     async def _call_tool(
-        self, tool_name: str, arguments: dict[str, Any], server: str = "food"
-    ) -> dict[str, Any]:
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],  # pyright: ignore[reportExplicitAny]
+        server: str = "food",
+    ) -> dict[str, Any]:  # pyright: ignore[reportExplicitAny]
         tokens = await self._get_tokens()
         if not tokens or not tokens.get("access_token"):
             raise PermissionError("Not authenticated with Swiggy. Please login first.")
 
-        access_token = tokens["access_token"]
+        access_token = tokens["access_token"]  # pyright: ignore[reportAny]
         payload = {
             "jsonrpc": "2.0",
             "id": time.time_ns() // 1000,
@@ -221,77 +249,166 @@ class SwiggyProvider(BaseProvider):
             refreshed = await self.refresh_auth()
             if refreshed:
                 tokens = await self._get_tokens()
+                assert tokens is not None
                 headers["Authorization"] = f"Bearer {tokens['access_token']}"
                 resp = await self._http.post(url, json=payload, headers=headers)
             else:
                 raise PermissionError("Swiggy session expired. Please re-authenticate.")
 
         if resp.status_code >= 400:
-            raise RuntimeError(f"Swiggy tool call failed ({resp.status_code}): {resp.text}")
+            raise RuntimeError(
+                f"Swiggy tool call failed ({resp.status_code}): {resp.text}"
+            )
 
-        content_type = resp.headers.get("content-type", "")
+        content_type = resp.headers.get(
+            "content-type", ""
+        )  # pyright: ignore[reportAny]
         if "text/event-stream" in content_type:
-            res_json: dict[str, Any] = {}
-            for line in resp.text.splitlines():
-                if line.startswith("data:"):
-                    raw_data = line[5:].strip()
-                    if raw_data:
-                        try:
-                            res_json = json.loads(raw_data)
-                            break
-                        except Exception:
-                            continue
-            if not res_json:
-                raise RuntimeError(f"Swiggy returned empty SSE response: {resp.text}")
+            res_json = self._parse_sse(resp.text, payload["id"])
         else:
-            res_json = resp.json()
+            res_json = resp.json()  # pyright: ignore[reportAny]
 
+        if not isinstance(res_json, dict):
+            raise RuntimeError(
+                f"Swiggy returned a malformed response for {tool_name}: {res_json!r}"
+            )
         if "error" in res_json:
-            err = res_json["error"]
-            raise RuntimeError(f"Swiggy tool error: {err.get('message', err)}")
+            err = res_json["error"]  # pyright: ignore[reportUnknownVariableType]
+            message = (  # pyright: ignore[reportUnknownVariableType]
+                err.get("message", err)  # pyright: ignore[reportUnknownMemberType]
+                if isinstance(err, dict)
+                else err
+            )
+            raise RuntimeError(f"Swiggy tool error: {message}")
 
-        result = res_json.get("result", {})
-        # Swiggy MCP returns structured data in result.structuredContent
-        if isinstance(result, dict) and "structuredContent" in result:
-            return result["structuredContent"]
-        # Fallback: parse JSON from the text content block
-        if isinstance(result, dict) and "content" in result:
-            for c in result.get("content", []):
-                if c.get("type") == "text":
-                    try:
-                        parsed = json.loads(c.get("text", ""))
-                        if isinstance(parsed, dict) and "data" in parsed:
-                            return parsed["data"]
-                        return parsed
-                    except Exception:
-                        pass
-        if isinstance(result, dict) and "data" in result:
-            return result["data"]
-        return result
+        return self._unwrap_result(  # pyright: ignore[reportAny]
+            tool_name,
+            res_json.get("result", {}),  # pyright: ignore[reportUnknownMemberType]
+        )
 
-    # --- Addresses ---
+    @staticmethod
+    def _parse_sse(
+        body: str, request_id: Any  # pyright: ignore[reportAny, reportExplicitAny]
+    ) -> dict[str, Any]:  # pyright: ignore[reportExplicitAny]
+        """Select the JSON-RPC response for this request from an SSE stream.
 
+        Streamable HTTP can include notifications before the response, so the
+        first data event is not necessarily the response to our request.
+        """
+        fallback: dict[str, Any] | None = None  # pyright: ignore[reportExplicitAny]
+        for line in body.splitlines():
+            if not line.startswith("data:"):
+                continue
+            raw = line[5:].strip()
+            if not raw:
+                continue
+            try:
+                message = json.loads(raw)  # pyright: ignore[reportAny]
+            except ValueError:
+                continue
+            if not isinstance(message, dict):
+                continue
+            if (
+                message.get("id") == request_id
+            ):  # pyright: ignore[reportUnknownMemberType]
+                return message  # pyright: ignore[reportUnknownVariableType]
+            if fallback is None and ("result" in message or "error" in message):
+                fallback = message  # pyright: ignore[reportUnknownVariableType]
+
+        if fallback is None:
+            raise RuntimeError(f"Swiggy returned empty SSE response: {body}")
+        return fallback
+
+    @staticmethod
+    def _unwrap_result(  # pyright: ignore[reportAny]
+        tool_name: str, result: Any  # pyright: ignore[reportAny, reportExplicitAny]
+    ) -> Any:  # pyright: ignore[reportExplicitAny]
+        """Normalize an MCP tool result while preserving tool payloads.
+
+        Swiggy's documented tool envelope is ``{success, data, message}``;
+        failures use ``{success: false, error: {message}}``. MCP may expose
+        that envelope through structuredContent or a JSON text content block.
+        """
+        if not isinstance(result, dict):
+            return result  # pyright: ignore[reportAny]
+
+        text_parts = [
+            item.get("text", "")
+            for item in result.get("content") or []
+            if isinstance(item, dict) and item.get("type") == "text"
+        ]
+        if result.get("isError"):
+            raise RuntimeError("\n".join(text_parts).strip() or f"{tool_name} failed")
+
+        payload: Any = result.get("structuredContent")
+        if payload is None:
+            for text in text_parts:
+                try:
+                    payload = json.loads(text)
+                    break
+                except ValueError:
+                    continue
+        if payload is None:
+            payload = result
+
+        # FastMCP can wrap non-object return values in a result object.
+        if isinstance(payload, dict) and set(payload) == {"result"}:
+            payload = payload["result"]
+
+        if isinstance(payload, dict):
+            if payload.get("success") is False:
+                error = payload.get("error")
+                if isinstance(error, dict):
+                    message = error.get("message") or payload.get("message")
+                else:
+                    message = error or payload.get("message")
+                raise RuntimeError(
+                    f"Swiggy {tool_name} failed: {message or 'unknown error'}"
+                )
+
+            # Unwrap the documented success envelope, but only when `data` is
+            # present so metadata-only payloads remain intact.
+            if payload.get("success") is True and "data" in payload:
+                return payload["data"]
+            if "data" in payload and len(payload) == 1:
+                return payload["data"]
+
+        return payload
+
+    @override
     async def get_addresses(self) -> list[Address]:
         res = await self._call_tool("get_addresses", {})
-        addresses_raw = res.get("addresses", []) if isinstance(res, dict) else res
+        addresses_raw: list[dict[str, Any]] = res.get(
+            "addresses", []
+        )  # pyright: ignore[reportExplicitAny, reportAny]
         addresses: list[Address] = []
         for a in addresses_raw:
+            addr_id = str(a.get("id") or a.get("addressId") or "")
+            lat = self._as_float(a.get("lat") or a.get("latitude"))
+            lng = self._as_float(a.get("lng") or a.get("longitude"))
+            if addr_id and lat is not None and lng is not None:
+                self._address_coords[addr_id] = (lat, lng)
+
             addresses.append(
                 Address(
-                    id=str(a.get("id") or a.get("addressId")),
-                    label=a.get("addressTag") or a.get("addressCategory") or a.get("label", "Address"),
-                    formatted_address=a.get("addressLine") or a.get("address") or a.get("formattedAddress", ""),
-                    latitude=a.get("lat") or a.get("latitude"),
-                    longitude=a.get("lng") or a.get("longitude"),
+                    id=addr_id,
+                    label=a.get("addressTag")
+                    or a.get("addressCategory")
+                    or a.get("label", "Address"),
+                    formatted_address=a.get("addressLine")
+                    or a.get("address")
+                    or a.get("formattedAddress", ""),
+                    latitude=lat,
+                    longitude=lng,
                     raw=a,
                 )
             )
         return addresses
 
-    # --- Discovery & Menu ---
-
     @staticmethod
-    def _as_float(value: Any) -> float | None:
+    def _as_float(
+        value: Any,
+    ) -> float | None:  # pyright: ignore[reportAny, reportExplicitAny]
         """Accept MCP numeric fields that may be returned as display text."""
         if value is None:
             return None
@@ -300,6 +417,7 @@ class SwiggyProvider(BaseProvider):
         match = re.search(r"\d+(?:\.\d+)?", str(value).replace(",", ""))
         return float(match.group()) if match else None
 
+    @override
     async def search_restaurants(self, query: str, address_id: str) -> list[Restaurant]:
         if not query.strip():
             raise ValueError("Swiggy restaurant searches require a non-empty query.")
@@ -309,22 +427,39 @@ class SwiggyProvider(BaseProvider):
         )
         restaurants_raw = res.get("restaurants", []) if isinstance(res, dict) else res
         restaurants: list[Restaurant] = []
-        for r in restaurants_raw:
-            sla = r.get("sla", {})
-            delivery_time = sla.get("deliveryTime") if isinstance(sla, dict) else None
-            distance = sla.get("lastMileTravel") if isinstance(sla, dict) else None
+        for r in restaurants_raw or []:
+            if not isinstance(r, dict) or not (r.get("id") or r.get("restaurantId")):
+                continue
 
+            # The current Swiggy MCP contract exposes normalized fields rather
+            # than the legacy app API's nested `sla`/Cloudinary fields.
+            delivery_time_value = r.get("deliveryTimeMinutes")
+            if delivery_time_value is None:
+                time_range = r.get("deliveryTimeRange")
+                if isinstance(time_range, dict):
+                    delivery_time_value = time_range.get("min") or time_range.get("max")
+                else:
+                    delivery_time_value = time_range
+            parsed_delivery_time = self._as_float(delivery_time_value)
+            delivery_time = (
+                int(parsed_delivery_time) if parsed_delivery_time is not None else None
+            )
+
+            rating = self._as_float(r.get("avgRating") or r.get("rating"))
+            availability = r.get("availabilityStatus")
             restaurants.append(
                 Restaurant(
                     id=str(r.get("id") or r.get("restaurantId")),
-                    name=r.get("name", "Unknown Restaurant"),
-                    cuisines=r.get("cuisines", []),
-                    rating=float(r.get("avgRating") or r.get("rating", 0.0)) or None,
+                    name=r.get("name") or "Unknown Restaurant",
+                    cuisines=r.get("cuisines") or [],
+                    rating=rating,
                     delivery_time_mins=delivery_time,
-                    distance_km=self._as_float(distance),
+                    distance_km=self._as_float(r.get("distanceKm")),
                     cost_for_two=self._as_float(r.get("costForTwo")),
-                    is_open=r.get("availabilityStatus", "OPEN").upper() == "OPEN",
-                    image_url=r.get("cloudinaryImageId"),
+                    # Unknown availability must not be presented as confirmed open.
+                    is_open=isinstance(availability, str)
+                    and availability.upper() == "OPEN",
+                    image_url=r.get("imageUrl") or r.get("cloudinaryImageId"),
                     raw=r,
                 )
             )
@@ -352,16 +487,27 @@ class SwiggyProvider(BaseProvider):
             for item in category.get("items", []):
                 if isinstance(item, dict):
                     flattened.append({**item, "category": category_name})
+            # Nested categories (MenuNestedCategory) carry subcategories[]
+            for subcat in category.get("subcategories", []):
+                if isinstance(subcat, dict):
+                    subcat_name = (
+                        subcat.get("title") or subcat.get("name") or category_name
+                    )
+                    for item in subcat.get("items", []):
+                        if isinstance(item, dict):
+                            flattened.append({**item, "category": subcat_name})
         return flattened
 
     @staticmethod
-    def _has_more_menu_items(res: dict[str, Any]) -> bool:
-        """Return whether any category advertises a following menu page."""
-        return any(
-            isinstance(category, dict) and category.get("hasMoreItems", False)
-            for category in res.get("categories", [])
-        )
+    def _has_more_menu_categories(res: dict[str, Any]) -> bool:
+        """Return whether more category pages exist in get_restaurant_menu."""
+        if "hasMore" in res:
+            return bool(res.get("hasMore"))
+        # Fallback if hasMore is not explicitly present
+        categories = res.get("categories", [])
+        return len(categories) >= SwiggyProvider.MENU_PAGE_SIZE
 
+    @override
     async def get_menu(
         self, restaurant_id: str, address_id: str | None = None
     ) -> list[MenuItem]:
@@ -381,7 +527,12 @@ class SwiggyProvider(BaseProvider):
             page_items = self._menu_items(res) if isinstance(res, dict) else res
             new_items = 0
             for item in page_items:
-                item_id = str(item.get("id") or item.get("itemId") or "")
+                item_id = str(
+                    item.get("id")
+                    or item.get("itemId")
+                    or item.get("menu_item_id")
+                    or ""
+                )
                 # "Recommended" repeats items found in their actual category.
                 # Keep an ID-less item rather than silently dropping it.
                 if item_id and item_id in seen_ids:
@@ -391,7 +542,7 @@ class SwiggyProvider(BaseProvider):
                 items_raw.append(item)
                 new_items += 1
 
-            if not isinstance(res, dict) or not self._has_more_menu_items(res):
+            if not isinstance(res, dict) or not self._has_more_menu_categories(res):
                 break
             # Protect against an endpoint that ignores page and repeats page 1.
             if not page_items or not new_items:
@@ -402,20 +553,29 @@ class SwiggyProvider(BaseProvider):
             price = float(item.get("price", 0))
             items.append(
                 MenuItem(
-                    id=str(item.get("id") or item.get("itemId")),
+                    id=str(
+                        item.get("id")
+                        or item.get("itemId")
+                        or item.get("menu_item_id")
+                        or ""
+                    ),
                     name=item.get("name", ""),
                     price=price,
                     description=item.get("description", ""),
                     is_veg=bool(item.get("isVeg", True)),
                     in_stock=bool(item.get("inStock", True)),
                     category=item.get("category", ""),
-                    variants=item.get("variants", []),
+                    variants=item.get("variants")
+                    or item.get("variantsV2")
+                    or item.get("variations")
+                    or [],
                     addons=item.get("addons", []),
                     raw=item,
                 )
             )
         return items
 
+    @override
     async def search_menu(
         self, restaurant_id: str, query: str, address_id: str | None = None
     ) -> list[MenuItem]:
@@ -433,28 +593,36 @@ class SwiggyProvider(BaseProvider):
             price = float(item.get("price", 0))
             items.append(
                 MenuItem(
-                    id=str(item.get("id") or item.get("itemId")),
+                    id=str(
+                        item.get("menu_item_id")
+                        or item.get("id")
+                        or item.get("itemId")
+                        or ""
+                    ),
                     name=item.get("name", ""),
                     price=price,
                     description=item.get("description", ""),
                     is_veg=bool(item.get("isVeg", True)),
                     in_stock=bool(item.get("inStock", True)),
                     category=item.get("category", ""),
-                    variants=item.get("variants", []),
+                    variants=item.get("variants")
+                    or item.get("variantsV2")
+                    or item.get("variations")
+                    or [],
                     addons=item.get("addons", []),
                     raw=item,
                 )
             )
         return items
 
-    # --- Cart ---
-
+    @override
     async def get_cart(self, address_id: str | None = None) -> Cart:
         res = await self._call_tool(
             "get_food_cart", {"addressId": self._address_id(address_id)}
         )
         return self._parse_cart(res)
 
+    @override
     async def update_cart(
         self,
         restaurant_id: str,
@@ -481,9 +649,11 @@ class SwiggyProvider(BaseProvider):
         )
         return self._parse_cart(res)
 
+    @override
     async def clear_cart(self) -> None:
-        await self._call_tool("flush_food_cart", {})
+        _ = await self._call_tool("flush_food_cart", {})
 
+    @override
     async def apply_coupon(self, code: str, address_id: str | None = None) -> Cart:
         res = await self._call_tool(
             "apply_food_coupon",
@@ -492,18 +662,28 @@ class SwiggyProvider(BaseProvider):
         return self._parse_cart(res)
 
     def _parse_cart(self, res: dict[str, Any]) -> Cart:
-        cart_data = res.get("data", res)
-        restaurant_id = str(
-            cart_data.get("restaurantId")
-            or cart_data.get("restaurant_id")
-            or ""
+        cart_data = res.get("data", res) if isinstance(res, dict) else {}
+        restaurant_info = (
+            cart_data.get("restaurant") if isinstance(cart_data, dict) else None
         )
-        items_raw = cart_data.get("items", [])
+        restaurant_id = ""
+        if isinstance(restaurant_info, dict):
+            restaurant_id = str(restaurant_info.get("id") or "")
+        if not restaurant_id and isinstance(cart_data, dict):
+            restaurant_id = str(
+                cart_data.get("restaurantId") or cart_data.get("restaurant_id") or ""
+            )
+
+        items_raw = cart_data.get("items", []) if isinstance(cart_data, dict) else []
         parsed_items: list[CartItem] = []
         for it in items_raw:
+            if not isinstance(it, dict):
+                continue
             parsed_items.append(
                 CartItem(
-                    item_id=str(it.get("menu_item_id") or it.get("itemId") or it.get("id")),
+                    item_id=str(
+                        it.get("menu_item_id") or it.get("itemId") or it.get("id") or ""
+                    ),
                     name=it.get("name", ""),
                     price=float(it.get("final_price") or it.get("price") or 0),
                     quantity=int(it.get("quantity", 1)),
@@ -512,58 +692,138 @@ class SwiggyProvider(BaseProvider):
                 )
             )
 
-        bill = cart_data.get("pricing") or cart_data.get("bill") or cart_data
-        offers = cart_data.get("offers", {}) or {}
+        bill = (
+            cart_data.get("pricing") or cart_data.get("bill") or cart_data
+            if isinstance(cart_data, dict)
+            else {}
+        )
+        offers = cart_data.get("offers", {}) if isinstance(cart_data, dict) else {}
+        if not isinstance(offers, dict):
+            offers = {}
+        if not isinstance(bill, dict):
+            bill = {}
+
         return Cart(
             restaurant_id=restaurant_id,
             items=parsed_items,
             item_total=float(bill.get("item_total") or bill.get("itemTotal") or 0),
-            delivery_fee=float(bill.get("delivery_charge") or bill.get("deliveryFee") or 0),
-            taxes=float(bill.get("taxes_and_charges") or bill.get("taxes") or 0),
-            discount=float(offers.get("coupon_discount") or bill.get("discount") or 0),
+            delivery_fee=float(
+                bill.get("delivery_charge")
+                or bill.get("delivery_fee")
+                or bill.get("deliveryFee")
+                or 0
+            ),
+            taxes=float(
+                bill.get("taxes_and_charges")
+                or bill.get("taxes")
+                or bill.get("packaging_fee")
+                or 0
+            ),
+            discount=float(
+                offers.get("coupon_discount")
+                or bill.get("coupon_discount")
+                or bill.get("discount")
+                or 0
+            ),
             grand_total=float(
                 bill.get("to_pay") or bill.get("grandTotal") or bill.get("total") or 0
             ),
             raw=cart_data,
         )
 
-    # --- Checkout & Payments ---
-
+    @override
     async def get_payment_options(self, address_id: str) -> list[PaymentMethod]:
         self._active_address_id = address_id
         res = await self._call_tool("get_payment_options", {"addressId": address_id})
         options: list[PaymentMethod] = []
 
         # Check COD
-        if res.get("cod") or res.get("codAvailable"):
-            options.append(PaymentMethod(id="COD", name="Cash on Delivery", method_type="COD"))
+        cod = res.get("cod")
+        if (
+            (isinstance(cod, dict) and cod.get("available"))
+            or (isinstance(cod, bool) and cod)
+            or res.get("codAvailable")
+        ):
+            cod_id = cod.get("id", "COD") if isinstance(cod, dict) else "COD"
+            cod_name = (
+                cod.get("displayName", "Cash on Delivery")
+                if isinstance(cod, dict)
+                else "Cash on Delivery"
+            )
+            options.append(
+                PaymentMethod(
+                    id=cod_id,
+                    name=cod_name,
+                    method_type="COD",
+                    details=cod if isinstance(cod, dict) else {},
+                )
+            )
+
+        # Check Swiggy Money
+        swiggy_money = res.get("swiggyMoney")
+        if isinstance(swiggy_money, dict) and swiggy_money.get("available"):
+            options.append(
+                PaymentMethod(
+                    id=swiggy_money.get("id", "SwiggyPay"),
+                    name=swiggy_money.get("displayName", "Swiggy Money"),
+                    method_type="WALLET",
+                    details=swiggy_money,
+                )
+            )
 
         # Platforms (desktop / mobile UPI)
         platforms = res.get("platforms", {})
-        desktop = platforms.get("desktop", {})
-        for m in desktop.get("methods", []):
-            options.append(
-                PaymentMethod(
-                    id=m.get("id", "UPI_QR"),
-                    name=m.get("name", "UPI Scan & Pay"),
-                    method_type="UPI_QR",
-                    details=m,
-                )
-            )
+        if isinstance(platforms, dict):
+            desktop = platforms.get("desktop", {})
+            if isinstance(desktop, dict):
+                for m in desktop.get("methods", []):
+                    if isinstance(m, dict):
+                        options.append(
+                            PaymentMethod(
+                                id=m.get("id", "UPI_QR"),
+                                name=m.get("displayName")
+                                or m.get("name", "UPI Scan & Pay"),
+                                method_type="UPI_QR",
+                                details=m,
+                            )
+                        )
 
-        mobile = platforms.get("mobile", {})
-        for m in mobile.get("methods", []):
-            options.append(
-                PaymentMethod(
-                    id=m.get("id", "UPI_INTENT"),
-                    name=m.get("name", "UPI App"),
-                    method_type="UPI_INTENT",
-                    details=m,
-                )
-            )
+            mobile = platforms.get("mobile", {})
+            if isinstance(mobile, dict):
+                for m in mobile.get("methods", []):
+                    if isinstance(m, dict):
+                        options.append(
+                            PaymentMethod(
+                                id=m.get("id", "UPI_INTENT"),
+                                name=m.get("displayName") or m.get("name", "UPI App"),
+                                method_type="UPI_INTENT",
+                                details=m,
+                            )
+                        )
+
+        # Fallback to allMethods if platforms wasn't populated
+        if not options and "allMethods" in res:
+            for m in res.get("allMethods", []):
+                if isinstance(m, dict):
+                    m_kind = (m.get("kind") or "").upper()
+                    m_type = (
+                        "UPI_QR"
+                        if m_kind == "QR"
+                        else ("UPI_INTENT" if m_kind == "INTENT" else "OTHER")
+                    )
+                    options.append(
+                        PaymentMethod(
+                            id=m.get("id", ""),
+                            name=m.get("displayName")
+                            or m.get("name", "Payment Option"),
+                            method_type=m_type,
+                            details=m,
+                        )
+                    )
 
         return options
 
+    @override
     async def place_order(
         self, payment_method: str, address_id: str, **kwargs: Any
     ) -> OrderPlacement:
@@ -579,66 +839,236 @@ class SwiggyProvider(BaseProvider):
         status_str = res.get("status", "PLACED").upper()
         requires_payment = status_str in ("PENDING_PAYMENT", "PENDING")
 
+        payment_url = (
+            res.get("bridgeUrl") or res.get("paymentUrl") or res.get("upiIntentUrl")
+        )
+        upi_qr = (
+            res.get("upiQrString")
+            or res.get("qrData")
+            or (res.get("upiIntentUrl") if res.get("isQrFlow") else None)
+        )
+
+        # Cache order context for subsequent check_payment_status / confirm_order
+        if order_id:
+            coords = self._address_coords.get(address_id, (None, None))
+            lat = res.get("lat") if res.get("lat") is not None else coords[0]
+            lng = res.get("lng") if res.get("lng") is not None else coords[1]
+            self._order_contexts[order_id] = {
+                "addressId": res.get("addressId") or address_id,
+                "cartId": res.get("cartId"),
+                "lat": lat,
+                "lng": lng,
+                "restaurantName": res.get("restaurantName"),
+                "totalAmount": self._as_float(res.get("totalAmount")),
+            }
+
         return OrderPlacement(
             order_id=order_id,
-            status=OrderStatus.PENDING_PAYMENT if requires_payment else OrderStatus.PLACED,
+            status=(
+                OrderStatus.PENDING_PAYMENT if requires_payment else OrderStatus.PLACED
+            ),
             requires_payment=requires_payment,
-            upi_qr_string=res.get("upiQrString") or res.get("qrData"),
-            payment_url=res.get("paymentUrl"),
-            max_poll_time_ms=res.get("maxTimeToPollForInMs", 180000),
-            poll_interval_ms=res.get("pollingIntervalInMs", 5000),
+            upi_qr_string=upi_qr,
+            payment_url=payment_url,
+            max_poll_time_ms=cast(int, res.get("maxTimeToPollForInMs", 180000)),
+            poll_interval_ms=cast(int, res.get("pollingIntervalInMs", 5000)),
             raw=res,
         )
 
-    async def check_payment_status(self, order_id: str, **kwargs: Any) -> dict[str, Any]:
-        paas_id = kwargs.pop("paasId", None) or kwargs.pop("paas_id", None)
+    @override
+    async def check_payment_status(
+        self, order_id: str, **kwargs: Any
+    ) -> dict[str, Any]:
+        paas_id = cast(str, kwargs.pop("paasId", None) or kwargs.pop("paas_id", None))
         if not paas_id:
-            raise ValueError("Swiggy payment-status checks require the checkout paasId.")
-        args = {"paasId": paas_id, "orderId": order_id, **kwargs}
+            raise ValueError(
+                "Swiggy payment-status checks require the checkout paasId."
+            )
+        args: dict[str, Any] = {"paasId": paas_id, "orderId": order_id}
+
+        ctx = self._order_contexts.get(order_id, {})
+        address_id = (
+            kwargs.pop("addressId", None)
+            or ctx.get("addressId")
+            or self._active_address_id
+        )
+        if address_id:
+            args["addressId"] = address_id
+        lat = kwargs.pop("lat", None) or ctx.get("lat")
+        lng = kwargs.pop("lng", None) or ctx.get("lng")
+        if lat is not None:
+            args["lat"] = lat
+        if lng is not None:
+            args["lng"] = lng
+        cart_id = kwargs.pop("cartId", None) or ctx.get("cartId")
+        if cart_id:
+            args["cartId"] = cart_id
+
+        args.update(kwargs)
         return await self._call_tool("check_payment_status", args)
 
+    @override
     async def confirm_order(self, order_id: str, **kwargs: Any) -> OrderSummary:
-        res = await self._call_tool("confirm_order", {"orderId": order_id, **kwargs})
+        ctx = self._order_contexts.get(order_id, {})
+        args: dict[str, Any] = {"orderId": order_id}
+
+        address_id = (
+            kwargs.pop("addressId", None)
+            or ctx.get("addressId")
+            or self._active_address_id
+        )
+        if address_id:
+            args["addressId"] = address_id
+
+        lat = kwargs.pop("lat", None) or ctx.get("lat")
+        lng = kwargs.pop("lng", None) or ctx.get("lng")
+        if (
+            (lat is None or lng is None)
+            and address_id
+            and address_id in self._address_coords
+        ):
+            lat, lng = self._address_coords[address_id]
+        if lat is not None:
+            args["lat"] = lat
+        if lng is not None:
+            args["lng"] = lng
+
+        cart_id = kwargs.pop("cartId", None) or ctx.get("cartId")
+        if cart_id:
+            args["cartId"] = cart_id
+
+        args.update(kwargs)
+        res = await self._call_tool("confirm_order", args)
+
+        returned_id = str(res.get("orderId") or order_id)
+        result_status = (
+            res.get("result") or res.get("orderStatus") or "CONFIRMED"
+        ).upper()
+        status = (
+            OrderStatus.CONFIRMED
+            if result_status in ("SUCCESS", "CONFIRMED", "PLACED")
+            else OrderStatus.FAILED
+        )
+
+        total = ctx.get("totalAmount")
+        if total is None:
+            total = self._as_float(res.get("total")) or 0.0
+
+        restaurant_name = str(
+            ctx.get("restaurantName") or res.get("restaurantName") or ""
+        )
+        items_summary = str(ctx.get("itemsSummary") or res.get("itemsSummary") or "")
+
         return OrderSummary(
-            order_id=str(res.get("orderId", order_id)),
-            restaurant_name=res.get("restaurantName", ""),
-            status=OrderStatus.CONFIRMED,
-            total_amount=float(res.get("total", 0)),
-            items_summary=res.get("itemsSummary", ""),
+            order_id=returned_id,
+            restaurant_name=restaurant_name,
+            status=status,
+            total_amount=total,
+            items_summary=items_summary,
             raw=res,
         )
 
-    # --- Orders & Tracking ---
-
+    @override
     async def get_orders(self, address_id: str | None = None) -> list[OrderSummary]:
         res = await self._call_tool(
             "get_food_orders", {"addressId": self._address_id(address_id)}
         )
-        orders_raw = res.get("orders", []) if isinstance(res, dict) else res
+        orders_raw: list[dict[str, Any]] = (
+            res.get("orders", []) if isinstance(res, dict) else res
+        )
         summaries: list[OrderSummary] = []
         for o in orders_raw:
+            if not isinstance(o, dict):
+                continue
+            order_id = str(o.get("orderId") or "")
+            order_total = self._as_float(o.get("orderTotal") or o.get("total")) or 0.0
+            items_summary = str(o.get("orderedItems") or o.get("itemsSummary") or "")
+            created_at = o.get("orderedTime") or o.get("orderTime")
+
+            raw_status = (
+                o.get("orderStatus") or o.get("orderDeliveryStatus") or "PLACED"
+            ).upper()
+            if "DELIVER" in raw_status:
+                status = OrderStatus.DELIVERED
+            elif "CANCEL" in raw_status:
+                status = OrderStatus.CANCELLED
+            elif "OUT" in raw_status:
+                status = OrderStatus.OUT_FOR_DELIVERY
+            elif "CONFIRM" in raw_status:
+                status = OrderStatus.CONFIRMED
+            else:
+                status = OrderStatus.PLACED
+
             summaries.append(
                 OrderSummary(
-                    order_id=str(o.get("orderId", "")),
-                    restaurant_name=o.get("restaurantName", "Restaurant"),
-                    status=OrderStatus.PLACED,
-                    total_amount=float(o.get("total", 0)),
-                    items_summary=o.get("itemsSummary", ""),
-                    created_at=o.get("orderTime"),
+                    order_id=order_id,
+                    restaurant_name=str(o.get("restaurantName") or "Restaurant"),
+                    status=status,
+                    total_amount=order_total,
+                    items_summary=items_summary,
+                    created_at=created_at,
                     raw=o,
                 )
             )
         return summaries
 
+    @override
     async def track_order(self, order_id: str) -> OrderTracking:
         res = await self._call_tool("track_food_order", {"orderId": order_id})
-        partner = res.get("deliveryPartner", {}) or {}
+
+        order_data: dict[str, Any] = {}
+        if isinstance(res, dict):
+            orders = res.get("orders")
+            if isinstance(orders, list) and orders:
+                matched = next(
+                    (
+                        o
+                        for o in orders
+                        if isinstance(o, dict)
+                        and str(o.get("orderId")) == str(order_id)
+                    ),
+                    orders[0] if isinstance(orders[0], dict) else {},
+                )
+                order_data = matched if isinstance(matched, dict) else {}
+            elif isinstance(res.get("order"), dict):
+                order_data = res["order"]
+            else:
+                order_data = res
+
+        status_str = (
+            order_data.get("orderStatus") or res.get("status") or "OUT_FOR_DELIVERY"
+        ).upper()
+        if "DELIVERED" in status_str:
+            status = OrderStatus.DELIVERED
+        elif "CANCEL" in status_str:
+            status = OrderStatus.CANCELLED
+        elif "PREPAR" in status_str:
+            status = OrderStatus.PREPARING
+        elif "CONFIRM" in status_str:
+            status = OrderStatus.CONFIRMED
+        else:
+            status = OrderStatus.OUT_FOR_DELIVERY
+
+        eta_raw = order_data.get("etaText") or res.get("eta") or res.get("etaMinutes")
+        parsed_eta = self._as_float(eta_raw)
+        eta_mins = int(parsed_eta) if parsed_eta is not None else None
+
+        status_message = str(
+            order_data.get("subtitle")
+            or order_data.get("title")
+            or res.get("statusMessage")
+            or ""
+        )
+
+        partner = res.get("deliveryPartner") or order_data.get("deliveryPartner") or {}
+        partner_dict = partner if isinstance(partner, dict) else {}
+
         return OrderTracking(
             order_id=order_id,
-            status=OrderStatus.OUT_FOR_DELIVERY,
-            eta_mins=res.get("eta") or res.get("etaMinutes"),
-            status_message=res.get("statusMessage", ""),
-            delivery_partner_name=partner.get("name"),
-            delivery_partner_phone=partner.get("phone"),
+            status=status,
+            eta_mins=eta_mins,
+            status_message=status_message,
+            delivery_partner_name=partner_dict.get("name"),
+            delivery_partner_phone=partner_dict.get("phone"),
             raw=res,
         )
