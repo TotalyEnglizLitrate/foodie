@@ -14,6 +14,7 @@ import httpx
 from foodie.models import (
     Address,
     Cart,
+    CartCoupon,
     CartItem,
     MenuItem,
     OrderPlacement,
@@ -46,6 +47,7 @@ class SwiggyProvider(BaseProvider):
         self._http: httpx.AsyncClient = httpx.AsyncClient(timeout=30.0)
         self._active_address_id: str | None = None
         self._address_coords: dict[str, tuple[float, float]] = {}
+        self._cart_id: str | None = None
         self._order_contexts: dict[str, dict[str, Any]] = {}
 
     @property
@@ -609,6 +611,9 @@ class SwiggyProvider(BaseProvider):
         res = await self._call_tool(
             "get_food_cart", {"addressId": self._address_id(address_id)}
         )
+        cart_data = res.get("data", res) if isinstance(res, dict) else {}
+        if isinstance(cart_data, dict) and cart_data.get("cart_id") is not None:
+            self._cart_id = str(cart_data["cart_id"])
         return self._parse_cart(res)
 
     @override
@@ -636,19 +641,71 @@ class SwiggyProvider(BaseProvider):
                 "addressId": self._address_id(address_id),
             },
         )
+        cart_data = res.get("data", res) if isinstance(res, dict) else {}
+        if isinstance(cart_data, dict) and cart_data.get("cart_id") is not None:
+            self._cart_id = str(cart_data["cart_id"])
         return self._parse_cart(res)
 
     @override
     async def clear_cart(self) -> None:
         _ = await self._call_tool("flush_food_cart", {})
+        self._cart_id = None
 
     @override
     async def apply_coupon(self, code: str, address_id: str | None = None) -> Cart:
+        arguments: dict[str, Any] = {
+            "couponCode": code.strip(),
+            "addressId": self._address_id(address_id),
+        }
+        if self._cart_id is not None:
+            arguments["cartId"] = self._cart_id
         res = await self._call_tool(
             "apply_food_coupon",
-            {"couponCode": code, "addressId": self._address_id(address_id)},
+            arguments,
         )
+        cart_data = res.get("data", res) if isinstance(res, dict) else {}
+        if isinstance(cart_data, dict) and cart_data.get("cart_id") is not None:
+            self._cart_id = str(cart_data["cart_id"])
         return self._parse_cart(res)
+
+    @override
+    async def get_cart_coupons(
+        self,
+        restaurant_id: str,
+        address_id: str,
+        cart: Cart | None = None,
+    ) -> list[CartCoupon]:
+        del cart
+        res = await self._call_tool(
+            "fetch_food_coupons",
+            {"restaurantId": restaurant_id, "addressId": self._address_id(address_id)},
+        )
+        coupons: list[CartCoupon] = []
+        sections = res.get("coupon_sections", []) if isinstance(res, dict) else []
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            for offer in section.get("coupons", []):
+                if not isinstance(offer, dict):
+                    continue
+                code = offer.get("id")
+                if not code:
+                    continue
+                coupons.append(
+                    CartCoupon(
+                        code=str(code),
+                        title=str(offer.get("title") or ""),
+                        description=str(
+                            offer.get("description")
+                            or offer.get("subtitle")
+                            or offer.get("ribbon_text")
+                            or ""
+                        ),
+                        applicable=bool(offer.get("applicable", False)),
+                        raw=offer,
+                    )
+                )
+        return coupons
 
     def _parse_cart(self, res: dict[str, Any]) -> Cart:
         cart_data = res.get("data", res) if isinstance(res, dict) else {}

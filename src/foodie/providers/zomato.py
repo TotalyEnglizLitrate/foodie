@@ -15,6 +15,7 @@ import httpx
 from foodie.models import (
     Address,
     Cart,
+    CartCoupon,
     CartItem,
     MenuItem,
     OrderPlacement,
@@ -824,9 +825,103 @@ class ZomatoProvider(BaseProvider):
 
     @override
     async def apply_coupon(self, code: str, address_id: str | None = None) -> Cart:
-        raise NotImplementedError(
-            "Zomato MCP does not expose a coupon-application tool."
+        if self._cart_response is None or self._cart_restaurant_id is None:
+            raise RuntimeError("Create a Zomato cart before applying a coupon.")
+
+        cart = self._parse_cart(self._cart_response)
+        payload_items = [
+            {
+                "variant_id": item.item_id,
+                "quantity": item.quantity,
+                "add_ons": [
+                    {
+                        "id": str(addon.get("id") or addon.get("choice_id")),
+                        "quantity": int(addon.get("quantity", 1)),
+                    }
+                    for addon in item.selected_addons
+                    if addon.get("id") or addon.get("choice_id")
+                ]
+                or None,
+            }
+            for item in cart.items
+        ]
+        resolved_address_id = self._address_id(address_id)
+        if not self._cart_payment_type:
+            raise RuntimeError("Zomato cart is missing its payment type.")
+        res = await self._call_tool(
+            "create_cart",
+            {
+                "res_id": self._cart_restaurant_id,
+                "address_id": resolved_address_id,
+                "items": payload_items,
+                "payment_type": self._cart_payment_type,
+                "promo_code": code,
+            },
         )
+        updated_cart = self._extract_cart(res)
+        self._cart_response = updated_cart
+        return self._parse_cart(updated_cart)
+
+    @override
+    async def get_cart_coupons(
+        self,
+        restaurant_id: str,
+        address_id: str,
+        cart: Cart | None = None,
+    ) -> list[CartCoupon]:
+        if str(restaurant_id) != str(self._cart_restaurant_id):
+            raise ValueError("The requested restaurant does not match the Zomato cart.")
+        self._address_id(address_id)
+
+        cart_data = cart.raw if cart is not None else self._cart_response
+        if not isinstance(cart_data, dict):
+            raise RuntimeError("Create a Zomato cart before listing its promos.")
+        offers = cart_data.get("offers", [])
+        if isinstance(offers, dict):
+            offers = offers.get("offers") or offers.get("coupons") or []
+        coupons: list[CartCoupon] = []
+        for offer in offers or []:
+            if not isinstance(offer, dict):
+                continue
+            code = (
+                offer.get("coupon_code")
+                or offer.get("couponCode")
+                or offer.get("code")
+                or offer.get("offer_id")
+                or offer.get("id")
+            )
+            if not code:
+                continue
+            coupons.append(
+                CartCoupon(
+                    code=str(code),
+                    title=str(offer.get("title") or offer.get("name") or ""),
+                    description=str(
+                        offer.get("description")
+                        or offer.get("subtitle")
+                        or offer.get("terms")
+                        or ""
+                    ),
+                    discount=(
+                        _num(
+                            offer.get("discount")
+                            or offer.get("discount_amount")
+                            or offer.get("discountAmount")
+                        )
+                        or None
+                    ),
+                    applicable=bool(
+                        offer.get("applicable", offer.get("is_applicable", True))
+                    ),
+                    recommended=bool(
+                        offer.get("recommended")
+                        or offer.get("is_recommended")
+                        or offer.get("isRecommended")
+                    ),
+                    raw=offer,
+                )
+            )
+        return coupons
 
     def _payment_type(self, payment_method: str | None) -> str:
         normalized = (payment_method or "").lower()

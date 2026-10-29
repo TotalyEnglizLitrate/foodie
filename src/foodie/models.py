@@ -87,6 +87,17 @@ class Cart:
 
 
 @dataclass
+class CartCoupon:
+    code: str
+    title: str = ""
+    description: str = ""
+    discount: float | None = None
+    applicable: bool = True
+    recommended: bool = False
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class PaymentMethod:
     id: str
     name: str

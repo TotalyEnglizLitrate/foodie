@@ -6,6 +6,7 @@ from typing import Any
 from foodie.models import (
     Address,
     Cart,
+    CartCoupon,
     CartItem,
     MenuItem,
     OrderPlacement,
@@ -121,6 +122,16 @@ class BaseProvider(ABC):
     @abstractmethod
     async def apply_coupon(self, code: str, address_id: str | None = None) -> Cart:
         """Apply a discount coupon code to the current cart and return updated totals."""
+        ...
+
+    @abstractmethod
+    async def get_cart_coupons(
+        self,
+        restaurant_id: str,
+        address_id: str,
+        cart: Cart | None = None,
+    ) -> list[CartCoupon]:
+        """List coupons applicable to a specific restaurant cart."""
         ...
 
     @abstractmethod
