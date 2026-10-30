@@ -18,6 +18,7 @@ import time
 
 import httpx
 
+from foodie.models import ProviderName
 from foodie.secret_store import SecretStore
 
 ENDPOINTS = {
@@ -32,7 +33,7 @@ SERVICE_KEYS = {
 
 async def get_token(provider: str) -> str:
     store = SecretStore()
-    raw = await store.get_credential(SERVICE_KEYS[provider], "tokens")
+    raw = await store.get_credential("foodie", "tokens", ProviderName(provider))
     if not raw:
         raise SystemExit(f"No stored tokens for {provider}. Run test_oauth.py first.")
     return json.loads(raw)["access_token"]
