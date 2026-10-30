@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import difflib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from rich.text import Text
 from textual import on
@@ -18,7 +18,7 @@ from foodie.models import Address, MenuItem, Restaurant
 from foodie.providers.base import BaseProvider
 from foodie.providers.swiggy import SwiggyProvider
 from foodie.providers.zomato import ZomatoProvider
-from foodie.tui_busy import SHOW_AFTER_SECONDS, Busy
+from foodie.tui_busy import Busy
 from foodie.tui_cart import AddItemModal, CartScreen, CartState, ProviderContext
 from foodie.tui_track import OrdersScreen
 
@@ -87,9 +87,38 @@ def _price(value: float | None) -> str:
     return f"₹{value:,.0f}" if value is not None else "—"
 
 
+STARTUP_MESSAGE = "Starting Foodie — checking your Swiggy and Zomato sessions…"
+
+
 def describe(exc: BaseException) -> str:
     """An error message that is never empty (e.g. httpx.ConnectError has no text)."""
     return str(exc) or f"{type(exc).__name__} (could not reach the server)"
+
+
+@dataclass
+class ProviderState:
+    """A provider's login state and saved addresses, fetched ahead of the screen."""
+
+    authed: bool = False
+    addresses: list[Address] = field(default_factory=list)
+    error: str | None = None
+
+
+async def fetch_provider(provider: BaseProvider) -> ProviderState:
+    try:
+        authed = await provider.is_authenticated()
+    except Exception as exc:
+        return ProviderState(error=f"{provider.display_name}: {describe(exc)}")
+    if not authed:
+        return ProviderState()
+    try:
+        return ProviderState(True, await provider.get_addresses())
+    except Exception as exc:
+        return ProviderState(True, error=f"{provider.display_name}: {describe(exc)}")
+
+
+class SplashScreen(Screen[None]):
+    """A blank screen for the loading popup to sit on while the app starts."""
 
 
 def _address_label(address: Address) -> str:
@@ -142,9 +171,10 @@ class RestaurantsScreen(Screen[None]):
 
     BINDINGS = [("ctrl+r", "search", "Search"), ("q", "app.quit", "Quit")]
 
-    def __init__(self) -> None:
+    def __init__(self, preloaded: dict[str, ProviderState] | None = None) -> None:
         super().__init__()
         self.pairs: list[RestaurantPair] = []
+        self.preloaded = preloaded
 
     @property
     def foodie(self) -> "FoodieTui":
@@ -170,22 +200,25 @@ class RestaurantsScreen(Screen[None]):
 
     async def on_mount(self) -> None:
         self.query_one("#results", DataTable).focus()
-        await self.load_addresses(startup=True)
+        if self.preloaded is not None:
+            # The app fetched sessions and addresses behind the loading popup.
+            self.show_load_result(
+                [self.apply_provider(k, s) for k, s in self.preloaded.items()]
+            )
+        else:
+            await self.load_addresses()
 
     def _provider(self, key: str) -> BaseProvider:
         return getattr(self.foodie, key)
 
-    async def load_addresses(self, startup: bool = False) -> None:
-        # At startup the screen is empty, so show the popup straight away.
-        message = (
-            "Starting Foodie — checking your Swiggy and Zomato sessions…"
-            if startup
-            else "Loading your saved delivery addresses…"
-        )
-        async with self.foodie.busy(message, delay=0 if startup else SHOW_AFTER_SECONDS):
+    async def load_addresses(self) -> None:
+        async with self.foodie.busy("Loading your saved delivery addresses…"):
             results = await asyncio.gather(
                 self.load_provider("swiggy"), self.load_provider("zomato")
             )
+        self.show_load_result(list(results))
+
+    def show_load_result(self, results: list[str | None]) -> None:
         errors = [e for e in results if e]
         self.query_one("#status", Static).update(
             " · ".join(errors) if errors
@@ -194,26 +227,22 @@ class RestaurantsScreen(Screen[None]):
 
     async def load_provider(self, key: str) -> str | None:
         """Refresh a provider's auth button and address list; returns an error message."""
+        return self.apply_provider(key, await fetch_provider(self._provider(key)))
+
+    def apply_provider(self, key: str, state: ProviderState) -> str | None:
+        """Show a provider's state in the UI; returns an error message, if any."""
         provider = self._provider(key)
         button = self.query_one(f"#auth-{key}", Button)
         select = self.query_one(f"#{key}-address", Select)
-        try:
-            authed = await provider.is_authenticated()
-        except Exception as exc:
-            authed = False
-            error: str | None = f"{provider.display_name}: {describe(exc)}"
-        else:
-            error = None
-        button.label = f"{provider.display_name}: log out" if authed else f"{provider.display_name}: log in"
-        button.variant = "success" if authed else "warning"
+        button.label = f"{provider.display_name}: log out" if state.authed else f"{provider.display_name}: log in"
+        button.variant = "success" if state.authed else "warning"
         button.disabled = False
-        if not authed:
+        if not state.authed:
             select.set_options([])
-            return error or f"{provider.display_name} is not authenticated — press its log in button"
-        try:
-            addresses = await provider.get_addresses()
-        except Exception as exc:
-            return f"{provider.display_name}: {describe(exc)}"
+            return state.error or f"{provider.display_name} is not authenticated — press its log in button"
+        if state.error:
+            return state.error
+        addresses = state.addresses
         select.set_options(((_address_label(a), a.id) for a in addresses))
         self.foodie.address_labels.update({a.id: _address_label(a) for a in addresses})
         if addresses:
@@ -474,7 +503,20 @@ class FoodieTui(App[None]):
         self.push_screen(CartScreen())
 
     def on_mount(self) -> None:
-        self.push_screen(RestaurantsScreen())
+        self.run_worker(self._start(), exclusive=True)
+
+    async def _start(self) -> None:
+        """Blank screen, then the loading popup, then the restaurants screen."""
+        await self.push_screen(SplashScreen())
+        self.busy.begin(STARTUP_MESSAGE, delay=0)
+        await asyncio.sleep(0.1)  # let the blank screen and popup paint first
+        try:
+            results = await asyncio.gather(
+                *(fetch_provider(p) for p in self.providers.values())
+            )
+        finally:
+            await self.busy.end(STARTUP_MESSAGE)
+        await self.switch_screen(RestaurantsScreen(dict(zip(self.providers, results))))
 
     async def on_unmount(self) -> None:
         await asyncio.gather(

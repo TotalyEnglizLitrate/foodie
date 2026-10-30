@@ -51,16 +51,23 @@ class Busy:
     async def __call__(
         self, message: str, delay: float = SHOW_AFTER_SECONDS
     ) -> AsyncIterator[None]:
+        self.begin(message, delay)
+        try:
+            yield
+        finally:
+            await self.end(message)
+
+    def begin(self, message: str, delay: float = SHOW_AFTER_SECONDS) -> None:
+        """Start waiting; pair with ``end``."""
         self._messages.append(message)
         if delay <= 0:
             self._show_now()
         else:
             self._refresh()
-        try:
-            yield
-        finally:
-            self._messages.remove(message)
-            await self._refresh_async()
+
+    async def end(self, message: str) -> None:
+        self._messages.remove(message)
+        await self._refresh_async()
 
     def _show_now(self) -> None:
         """Show the popup immediately, e.g. at startup when the screen is still empty."""
