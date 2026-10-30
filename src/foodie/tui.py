@@ -18,7 +18,7 @@ from foodie.models import Address, MenuItem, Restaurant
 from foodie.providers.base import BaseProvider
 from foodie.providers.swiggy import SwiggyProvider
 from foodie.providers.zomato import ZomatoProvider
-from foodie.tui_busy import Busy
+from foodie.tui_busy import SHOW_AFTER_SECONDS, Busy
 from foodie.tui_cart import AddItemModal, CartScreen, CartState, ProviderContext
 from foodie.tui_track import OrdersScreen
 
@@ -170,13 +170,19 @@ class RestaurantsScreen(Screen[None]):
 
     async def on_mount(self) -> None:
         self.query_one("#results", DataTable).focus()
-        await self.load_addresses()
+        await self.load_addresses(startup=True)
 
     def _provider(self, key: str) -> BaseProvider:
         return getattr(self.foodie, key)
 
-    async def load_addresses(self) -> None:
-        async with self.foodie.busy("Loading your saved delivery addresses…"):
+    async def load_addresses(self, startup: bool = False) -> None:
+        # At startup the screen is empty, so show the popup straight away.
+        message = (
+            "Starting Foodie — checking your Swiggy and Zomato sessions…"
+            if startup
+            else "Loading your saved delivery addresses…"
+        )
+        async with self.foodie.busy(message, delay=0 if startup else SHOW_AFTER_SECONDS):
             results = await asyncio.gather(
                 self.load_provider("swiggy"), self.load_provider("zomato")
             )

@@ -48,14 +48,30 @@ class Busy:
         self._pending: asyncio.Task[None] | None = None
 
     @asynccontextmanager
-    async def __call__(self, message: str) -> AsyncIterator[None]:
+    async def __call__(
+        self, message: str, delay: float = SHOW_AFTER_SECONDS
+    ) -> AsyncIterator[None]:
         self._messages.append(message)
-        self._refresh()
+        if delay <= 0:
+            self._show_now()
+        else:
+            self._refresh()
         try:
             yield
         finally:
             self._messages.remove(message)
             await self._refresh_async()
+
+    def _show_now(self) -> None:
+        """Show the popup immediately, e.g. at startup when the screen is still empty."""
+        if self._pending is not None:
+            self._pending.cancel()
+            self._pending = None
+        if self._screen is None:
+            self._screen = BusyScreen(self._messages[-1])
+            self.app.push_screen(self._screen)
+        else:
+            self._screen.set_message(self._messages[-1])
 
     def _refresh(self) -> None:
         if self._screen is not None:
