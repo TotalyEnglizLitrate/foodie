@@ -1123,18 +1123,43 @@ class ZomatoProvider(BaseProvider):
         )
 
     @override
-    async def get_orders(self, address_id: str | None = None) -> list[OrderSummary]:
-        res = await self._call_tool(
-            "get_order_history", {"address_id": self._address_id(address_id)}
-        )
+    async def get_orders(
+        self, address_id: str | None = None, max_pages: int = 10
+    ) -> list[OrderSummary]:
         # Contract: {"order_history": {"order_history_items": [...], "has_more",
-        # "postback_params"}}. Only the first page is fetched.
-        history = res.get("order_history") if isinstance(res, dict) else None
-        orders_raw = (history or {}).get("order_history_items") or []
+        # "postback_params"}}. Later pages echo has_more/postback_params back.
+        orders_raw: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        args: dict[str, Any] = {"address_id": self._address_id(address_id)}
+        for _ in range(max_pages):
+            res = await self._call_tool("get_order_history", args)
+            history = (res.get("order_history") if isinstance(res, dict) else None) or {}
+            fresh = [
+                o
+                for o in history.get("order_history_items") or []
+                if isinstance(o, dict) and str(o.get("order_id")) not in seen
+            ]
+            seen.update(str(o.get("order_id")) for o in fresh)
+            orders_raw.extend(fresh)
+            postback = history.get("postback_params")
+            # Stop on the last page, or if the server repeats itself.
+            if not history.get("has_more") or not fresh or not postback:
+                break
+            args = {
+                **args,
+                "request_type": "load_more",
+                "has_more": True,
+                # The server JSON-decodes string arguments before validating them,
+                # so a raw "{...}" string arrives as an object and is rejected.
+                # Sending it JSON-quoted makes the decoded value the original string.
+                "postback_params": json.dumps(
+                    postback
+                    if isinstance(postback, str)
+                    else json.dumps(postback, separators=(",", ":"))
+                ),
+            }
         summaries: list[OrderSummary] = []
         for o in orders_raw:
-            if not isinstance(o, dict):
-                continue
             items_summary = ", ".join(
                 f"{ci.get('quantity', 1)}x {ci.get('name', '')}"
                 for ci in o.get("catalogue_items") or []
