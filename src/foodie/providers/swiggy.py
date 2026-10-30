@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -1024,7 +1025,9 @@ class SwiggyProvider(BaseProvider):
     @override
     async def get_orders(self, address_id: str | None = None) -> list[OrderSummary]:
         res = await self._call_tool(
-            "get_food_orders", {"addressId": self._address_id(address_id)}
+            "get_food_orders",
+            # The default is 5 orders; 15 is the documented maximum.
+            {"addressId": self._address_id(address_id), "orderCount": 15},
         )
         orders_raw: list[dict[str, Any]] = (
             res.get("orders", []) if isinstance(res, dict) else res
@@ -1041,16 +1044,24 @@ class SwiggyProvider(BaseProvider):
             raw_status = (
                 o.get("orderStatus") or o.get("orderDeliveryStatus") or "PLACED"
             ).upper()
-            if "DELIVER" in raw_status:
+            if "DELIVER" in raw_status and "OUT" not in raw_status:
                 status = OrderStatus.DELIVERED
             elif "CANCEL" in raw_status:
                 status = OrderStatus.CANCELLED
             elif "OUT" in raw_status:
                 status = OrderStatus.OUT_FOR_DELIVERY
+            elif "PREPAR" in raw_status:
+                status = OrderStatus.PREPARING
             elif "CONFIRM" in raw_status:
                 status = OrderStatus.CONFIRMED
             else:
                 status = OrderStatus.PLACED
+            # isActiveOrder is the documented per-order flag; trust it over the text.
+            if o.get("isActiveOrder") and status in (
+                OrderStatus.DELIVERED,
+                OrderStatus.CANCELLED,
+            ):
+                status = OrderStatus.OUT_FOR_DELIVERY
 
             summaries.append(
                 OrderSummary(
@@ -1067,38 +1078,54 @@ class SwiggyProvider(BaseProvider):
 
     @override
     async def track_order(self, order_id: str) -> OrderTracking:
-        res = await self._call_tool("track_food_order", {"orderId": order_id})
+        # track_food_order has the progress text; get_food_delivery_status adds the
+        # terminal flags, an absolute ETA and the recommended polling interval.
+        track_res, delivery_res = await asyncio.gather(
+            self._call_tool("track_food_order", {"orderId": order_id}),
+            self._call_tool("get_food_delivery_status", {"orderId": order_id}),
+            return_exceptions=True,
+        )
+        if isinstance(track_res, BaseException):
+            raise track_res
+        res: dict[str, Any] = track_res if isinstance(track_res, dict) else {}
+        delivery: dict[str, Any] = (
+            delivery_res if isinstance(delivery_res, dict) else {}
+        )
 
         order_data: dict[str, Any] = {}
-        if isinstance(res, dict):
-            orders = res.get("orders")
-            if isinstance(orders, list) and orders:
-                matched = next(
-                    (
-                        o
-                        for o in orders
-                        if isinstance(o, dict)
-                        and str(o.get("orderId")) == str(order_id)
-                    ),
-                    orders[0] if isinstance(orders[0], dict) else {},
-                )
-                order_data = matched if isinstance(matched, dict) else {}
-            elif isinstance(res.get("order"), dict):
-                order_data = res["order"]
-            else:
-                order_data = res
+        orders = res.get("orders")
+        if isinstance(orders, list) and orders:
+            # Never fall back to another order's tracking.
+            order_data = next(
+                (
+                    o
+                    for o in orders
+                    if isinstance(o, dict) and str(o.get("orderId")) == str(order_id)
+                ),
+                {},
+            )
+        elif isinstance(res.get("order"), dict):
+            order_data = res["order"]
+        elif not isinstance(orders, list):
+            order_data = res
 
-        if not order_data.get("orderStatus") and not res.get("status"):
+        delivered = bool(delivery.get("delivered"))
+        cancelled = bool(delivery.get("cancelled"))
+        raw_status = order_data.get("orderStatus") or res.get("status")
+        if not raw_status and not (delivered or cancelled):
             # Only active orders have live tracking; don't invent a status for the rest.
             raise LookupError(
-                str(res.get("statusMessage") or f"No tracking information for order {order_id}")
-                if isinstance(res, dict)
-                else f"No tracking information for order {order_id}"
+                str(
+                    res.get("statusMessage")
+                    or delivery.get("statusText")
+                    or f"No tracking information for order {order_id}"
+                )
             )
-        status_str = (order_data.get("orderStatus") or res.get("status")).upper()
-        if "DELIVERED" in status_str:
+
+        status_str = str(raw_status or "").upper()
+        if delivered or "DELIVERED" in status_str:
             status = OrderStatus.DELIVERED
-        elif "CANCEL" in status_str:
+        elif cancelled or "CANCEL" in status_str:
             status = OrderStatus.CANCELLED
         elif "PREPAR" in status_str:
             status = OrderStatus.PREPARING
@@ -1107,19 +1134,32 @@ class SwiggyProvider(BaseProvider):
         else:
             status = OrderStatus.OUT_FOR_DELIVERY
 
-        eta_raw = order_data.get("etaText") or res.get("eta") or res.get("etaMinutes")
-        parsed_eta = self._as_float(eta_raw)
-        eta_mins = int(parsed_eta) if parsed_eta is not None else None
+        eta_mins: int | None = None
+        if status not in (OrderStatus.DELIVERED, OrderStatus.CANCELLED):
+            delivery_by = self._as_float(delivery.get("deliveryBy"))
+            server_now = self._as_float(delivery.get("serverNow"))
+            if delivery_by is not None and server_now is not None:
+                # Both are epoch milliseconds.
+                eta_mins = max(0, round((delivery_by - server_now) / 60_000))
+            else:
+                eta_mins = self._eta_minutes(
+                    delivery.get("etaText")
+                    or order_data.get("etaText")
+                    or res.get("eta")
+                    or res.get("etaMinutes")
+                )
 
         status_message = str(
             order_data.get("subtitle")
             or order_data.get("title")
+            or delivery.get("statusText")
             or res.get("statusMessage")
             or ""
         )
 
         partner = res.get("deliveryPartner") or order_data.get("deliveryPartner") or {}
         partner_dict = partner if isinstance(partner, dict) else {}
+        poll = self._as_float(delivery.get("pollIntervalSec"))
 
         return OrderTracking(
             order_id=order_id,
@@ -1128,5 +1168,14 @@ class SwiggyProvider(BaseProvider):
             status_message=status_message,
             delivery_partner_name=partner_dict.get("name"),
             delivery_partner_phone=partner_dict.get("phone"),
-            raw=res,
+            poll_interval_secs=int(poll) if poll else None,
+            raw={"tracking": res, "delivery_status": delivery},
         )
+
+    def _eta_minutes(self, eta_raw: Any) -> int | None:  # pyright: ignore[reportAny, reportExplicitAny]
+        if isinstance(eta_raw, str) and "min" in eta_raw.lower():
+            # etaText is display text such as "35-40 mins"; use the upper bound.
+            numbers = re.findall(r"\d+", eta_raw)
+            return int(numbers[-1]) if numbers else None
+        parsed = self._as_float(eta_raw)
+        return int(parsed) if parsed is not None else None

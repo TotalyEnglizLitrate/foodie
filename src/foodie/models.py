@@ -126,6 +126,7 @@ class OrderTracking:
     status_message: str = ""
     delivery_partner_name: str | None = None
     delivery_partner_phone: str | None = None
+    poll_interval_secs: int | None = None  # provider's recommended refresh cadence
     raw: dict[str, Any] = field(default_factory=dict)
 
 
