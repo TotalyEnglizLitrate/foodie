@@ -13,10 +13,12 @@ from textual.screen import Screen
 from textual.widgets import Button, DataTable, Footer, Header, Input, Select, Static
 
 from foodie.auth import authenticate_interactive
-from foodie.models import Address, Restaurant
+from foodie.customize import CartLine
+from foodie.models import Address, MenuItem, Restaurant
 from foodie.providers.base import BaseProvider
 from foodie.providers.swiggy import SwiggyProvider
 from foodie.providers.zomato import ZomatoProvider
+from foodie.tui_cart import AddItemModal, CartScreen, CartState, ProviderContext
 
 
 @dataclass
@@ -311,6 +313,7 @@ class MenuScreen(Screen[None]):
         self.swiggy_address = swiggy_address
         self.zomato_address = zomato_address
         self.menu_items: list[tuple[str, object | None, object | None, float]] = []
+        self._rows: dict[str, tuple[MenuItem | None, MenuItem | None]] = {}
 
     @property
     def foodie(self) -> "FoodieTui":
@@ -363,30 +366,85 @@ class MenuScreen(Screen[None]):
         query = _normalise(self.query_one("#menu-query", Input).value)
         table = self.query_one("#menu-results", DataTable)
         table.clear()
+        self._rows.clear()
         current: str | None = None
-        for category, swiggy_item, zomato_item, score in self.menu_items:
+        for n, (category, swiggy_item, zomato_item, score) in enumerate(self.menu_items):
             names = " ".join(item.name for item in (swiggy_item, zomato_item) if item)
             if query and query not in _normalise(names + " " + category):
                 continue
             if category != current:
                 current = category
-                table.add_row(Text(category or "Uncategorised", style="bold"), "", "", "", "")
+                table.add_row(Text(category or "Uncategorised", style="bold"), "", "", "", "", key=f"h{n}")
+            self._rows[f"i{n}"] = (swiggy_item, zomato_item)
             table.add_row(
                 swiggy_item.name if swiggy_item else "—",
                 _price(swiggy_item.price) if swiggy_item else "—",
                 zomato_item.name if zomato_item else "—",
                 _price(zomato_item.price) if zomato_item else "—",
                 f"{score:.0%}" if swiggy_item and zomato_item else "Unmatched",
+                key=f"i{n}",
             )
+
+    @on(DataTable.RowSelected, "#menu-results")
+    def add_selected(self, event: DataTable.RowSelected) -> None:
+        items = self._rows.get(event.row_key.value or "")
+        if items is None:
+            return
+        pair = self.pair
+        contexts: dict[str, ProviderContext] = {}
+        addresses = {"swiggy": self.swiggy_address, "zomato": self.zomato_address}
+        restaurants = {"swiggy": pair.swiggy, "zomato": pair.zomato}
+        for key, item in zip(("swiggy", "zomato"), items):
+            restaurant = restaurants[key]
+            if item is not None and restaurant is not None and item.in_stock:
+                contexts[key] = ProviderContext(item, restaurant.id, addresses[key])
+        if not contexts:
+            self.notify("That item is out of stock.", severity="warning")
+            return
+        name = (items[0] or items[1]).name
+        self.app.push_screen(AddItemModal(name, contexts), self._added)
+
+    def _added(self, line: CartLine | None) -> None:
+        if line is None:
+            return
+        cart = self.foodie.cart
+        restaurants = {
+            k: r for k, r in (("swiggy", self.pair.swiggy), ("zomato", self.pair.zomato)) if r
+        }
+        cart.start(
+            (self.pair.swiggy or self.pair.zomato).name,
+            restaurants,
+            {"swiggy": self.swiggy_address, "zomato": self.zomato_address},
+        )
+        if not cart.covering([*cart.lines, line]):
+            self.notify(
+                "No single provider offers every item in your cart, so this wasn't added.",
+                severity="warning",
+            )
+            return
+        cart.lines.append(line)
+        providers = " + ".join(k.title() for k in line.entries)
+        self.notify(f"Added {line.quantity} × {line.name} ({providers}). Press c to view the cart.")
 
 
 class FoodieTui(App[None]):
     TITLE = "Foodie — Swiggy × Zomato"
+    BINDINGS = [("c", "cart", "Cart")]
 
     def __init__(self) -> None:
         super().__init__()
         self.swiggy = SwiggyProvider()
         self.zomato = ZomatoProvider()
+        self.providers: dict[str, BaseProvider] = {"swiggy": self.swiggy, "zomato": self.zomato}
+        self.cart = CartState()
+
+    def action_cart(self) -> None:
+        if isinstance(self.screen, CartScreen):
+            return
+        if not self.cart.lines:
+            self.notify("Your cart is empty. Press Enter on a menu item to add it.")
+            return
+        self.push_screen(CartScreen())
 
     def on_mount(self) -> None:
         self.push_screen(RestaurantsScreen())
