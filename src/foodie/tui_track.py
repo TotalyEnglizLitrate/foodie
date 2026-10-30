@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
 from rich.text import Text
@@ -20,6 +21,26 @@ TITLES = {"swiggy": "Swiggy", "zomato": "Zomato"}
 TERMINAL = {OrderStatus.DELIVERED, OrderStatus.CANCELLED, OrderStatus.FAILED}
 REFRESH_SECONDS = 20.0
 MIN_REFRESH_SECONDS = 10.0  # Swiggy asks clients not to poll faster
+
+
+# Order times carry no year, e.g. Swiggy "September 22, 7:56 PM" and Zomato "24 Oct, 7:06PM".
+TIME_FORMATS = ("%Y %B %d, %I:%M %p", "%Y %d %b, %I:%M%p", "%Y %d %b, %I:%M %p", "%Y %b %d, %I:%M %p")
+
+
+def parse_order_time(text: str | None, now: datetime | None = None) -> datetime | None:
+    """Parse a yearless order time, assuming the most recent past occurrence."""
+    if not text:
+        return None
+    now = now or datetime.now()
+    for fmt in TIME_FORMATS:
+        for year in (now.year, now.year - 1):
+            try:
+                parsed = datetime.strptime(f"{year} {text.strip()}", fmt)
+            except ValueError:
+                continue
+            if parsed <= now + timedelta(days=1):
+                return parsed
+    return None
 
 
 def _price(value: float | None) -> str:
@@ -87,8 +108,13 @@ class OrdersScreen(Screen[None]):
             f"{TITLES[k]}: {r}" for k, r in zip(TITLES, results) if isinstance(r, Exception)
         ]
         rows = [row for r in results if not isinstance(r, Exception) for row in r]
-        # Active orders first; history keeps each provider's own (newest-first) order.
-        self.rows = sorted(rows, key=lambda row: row[1].status in TERMINAL)
+        # Newest first; orders with an unreadable time sink to the bottom.
+        now = datetime.now()
+        self.rows = sorted(
+            rows,
+            key=lambda row: parse_order_time(row[1].created_at, now) or datetime.min,
+            reverse=True,
+        )
         table = self.query_one("#orders", DataTable)
         table.clear()
         for key, order in self.rows:
