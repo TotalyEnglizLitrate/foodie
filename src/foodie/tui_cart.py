@@ -33,14 +33,14 @@ from textual.widgets.selection_list import Selection
 from foodie import customize
 from foodie.customize import CartLine, OptionGroup
 from foodie.models import Cart, CartCoupon, MenuItem, Restaurant
-from foodie.tui_order import OrderConfirmModal, OrderStatusScreen, place_order
+from foodie.tui_order import PAYMENT_LABELS, OrderConfirmModal, OrderStatusScreen, place_order
 
 if TYPE_CHECKING:
     from foodie.tui import FoodieTui
 
 PROVIDERS = ("swiggy", "zomato")
 TITLES = {"swiggy": "Swiggy", "zomato": "Zomato"}
-PAYMENT_OPTIONS = [("Cash on delivery", "cash_on_delivery"), ("UPI", "upi")]
+PAYMENT_OPTIONS = [(label, value) for value, label in PAYMENT_LABELS.items()]
 
 
 def _price(value: float | None) -> str:
@@ -444,18 +444,19 @@ class CartScreen(Screen[None]):
         cart = self.foodie.cart
         self.providers = cart.covering()
         yield Header()
-        if "zomato" in self.providers:
-            with Horizontal(id="payment-row"):
-                yield Label("Zomato payment type")
-                select = Select(
-                    PAYMENT_OPTIONS,
-                    prompt="Choose to price the Zomato cart",
-                    id="payment",
-                    allow_blank=True,
-                )
-                if self.payment:
-                    select.value = self.payment
-                yield select
+        # One payment choice for every provider: Zomato needs it to price the
+        # cart, and placing an order with either provider uses it.
+        with Horizontal(id="payment-row"):
+            yield Label(f"Pay for {' & '.join(TITLES[k] for k in self.providers)} with")
+            select = Select(
+                PAYMENT_OPTIONS,
+                prompt="Choose a payment type",
+                id="payment",
+                allow_blank=True,
+            )
+            if self.payment:
+                select.value = self.payment
+            yield select
         yield Static("", id="cart-status")
         with Horizontal(id="panels"):
             for key in self.providers:
@@ -511,7 +512,7 @@ class CartScreen(Screen[None]):
             totals = self.query_one(f"#totals-{key}", Static)
             self.priced.pop(key, None)
             if key == "zomato" and self.payment is None:
-                totals.update("Choose a Zomato payment type above to price this cart.")
+                totals.update("Choose a payment type above to price this cart.")
                 return
             try:
                 result = await self.foodie.providers[key].update_cart(
@@ -616,22 +617,27 @@ class CartScreen(Screen[None]):
             return
         provider = self.foodie.providers[key]
         address_id = cart.addresses[key]
-        if key == "zomato":
-            payments = [("Cash on delivery" if self.payment == "cash_on_delivery" else "UPI QR", "cash" if self.payment == "cash_on_delivery" else "upi")]
-        else:
+        payment = self.payment
+        if payment is None:
+            self.notify("Choose a payment type first.", severity="warning")
+            return
+        if key == "swiggy":
+            # Swiggy lists what this cart can actually pay with; Zomato was priced for it.
             try:
                 methods = await provider.get_payment_options(address_id)
             except Exception as exc:
                 self.notify(f"Could not load payment options: {exc}", severity="error")
                 return
-            payments = [
-                ("UPI QR (scan to pay)", "upi") if m.method_type == "UPI_QR" else ("Cash on delivery", "cash")
+            offered = {
+                "upi" if m.method_type == "UPI_QR" else "cash"
                 for m in methods
                 if m.method_type in ("UPI_QR", "COD")
-            ]
-            payments = list(dict.fromkeys(payments))
-            if not payments:
-                self.notify("Swiggy offers no QR or cash payment for this cart.", severity="error")
+            }
+            if payment not in offered:
+                self.notify(
+                    f"Swiggy doesn't offer “{PAYMENT_LABELS[payment]}” for this cart.",
+                    severity="error",
+                )
                 return
         lines = [
             f"{line.quantity} × {line.name}" + (f" ({line.entries[key].summary})" if line.entries[key].summary else "")
@@ -644,7 +650,7 @@ class CartScreen(Screen[None]):
                 self.foodie.address_labels.get(address_id, address_id),
                 lines,
                 priced.grand_total,
-                payments,
+                payment,
             )
         )
         if choice is None:

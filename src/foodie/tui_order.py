@@ -10,13 +10,15 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Label, Select, Static
+from textual.widgets import Button, Label, Static
 
 from foodie.models import OrderPlacement, OrderStatus
 from foodie.providers.base import BaseProvider
 from foodie.qr import render_qr
 
 PAID = {"SUCCESS", "SUCCESSFUL", "PAID", "COMPLETED", "CHARGED", "CAPTURED"}
+# The one payment choice the cart screen offers, shared by both providers.
+PAYMENT_LABELS = {"upi": "UPI QR (scan to pay)", "cash": "Cash on delivery"}
 DEFAULT_POLL_SECONDS = 300.0
 MIN_POLL_INTERVAL = 3.0
 
@@ -61,7 +63,7 @@ def payment_state(result: dict[str, Any]) -> tuple[str, str]:
 
 
 class OrderConfirmModal(ModalScreen["str | None"]):
-    """Final confirmation before money moves; dismisses with the chosen payment."""
+    """Final confirmation before money moves; dismisses with the payment type, or None."""
 
     DEFAULT_CSS = """
     OrderConfirmModal { align: center middle; }
@@ -79,7 +81,7 @@ class OrderConfirmModal(ModalScreen["str | None"]):
         address: str,
         lines: list[str],
         total: float,
-        payments: list[tuple[str, str]],
+        payment: str,
     ) -> None:
         super().__init__()
         self.provider_name = provider_name
@@ -87,7 +89,7 @@ class OrderConfirmModal(ModalScreen["str | None"]):
         self.address = address
         self.lines = lines
         self.total = total
-        self.payments = payments
+        self.payment = payment
 
     def compose(self) -> ComposeResult:
         summary = "\n".join(
@@ -98,12 +100,12 @@ class OrderConfirmModal(ModalScreen["str | None"]):
                 "",
                 *self.lines,
                 "",
+                f"Payment: {PAYMENT_LABELS[self.payment]}",
                 f"[b]Total: {_price(self.total)}[/b]",
             ]
         )
         with Vertical(id="confirm"):
             yield Static(summary, id="confirm-summary")
-            yield Select(self.payments, allow_blank=False, id="confirm-payment")
             with Horizontal(id="confirm-buttons"):
                 yield Button(f"Place order · {_price(self.total)}", id="place", variant="warning")
                 yield Button("Cancel", id="cancel")
@@ -117,7 +119,7 @@ class OrderConfirmModal(ModalScreen["str | None"]):
 
     @on(Button.Pressed, "#place")
     def place(self) -> None:
-        self.dismiss(str(self.query_one("#confirm-payment", Select).value))
+        self.dismiss(self.payment)
 
 
 class OrderStatusScreen(ModalScreen[bool]):
