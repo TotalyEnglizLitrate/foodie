@@ -86,6 +86,11 @@ def _price(value: float | None) -> str:
     return f"₹{value:,.0f}" if value is not None else "—"
 
 
+def describe(exc: BaseException) -> str:
+    """An error message that is never empty (e.g. httpx.ConnectError has no text)."""
+    return str(exc) or f"{type(exc).__name__} (could not reach the server)"
+
+
 def _address_label(address: Address) -> str:
     location = address.formatted_address or address.label or address.id
     return f"{address.label}: {location}"
@@ -188,7 +193,7 @@ class RestaurantsScreen(Screen[None]):
             authed = await provider.is_authenticated()
         except Exception as exc:
             authed = False
-            error: str | None = f"{provider.display_name}: {exc}"
+            error: str | None = f"{provider.display_name}: {describe(exc)}"
         else:
             error = None
         button.label = f"{provider.display_name}: log out" if authed else f"{provider.display_name}: log in"
@@ -200,7 +205,7 @@ class RestaurantsScreen(Screen[None]):
         try:
             addresses = await provider.get_addresses()
         except Exception as exc:
-            return f"{provider.display_name}: {exc}"
+            return f"{provider.display_name}: {describe(exc)}"
         select.set_options(((_address_label(a), a.id) for a in addresses))
         self.foodie.address_labels.update({a.id: _address_label(a) for a in addresses})
         if addresses:
@@ -266,7 +271,7 @@ class RestaurantsScreen(Screen[None]):
                 return_exceptions=True,
             )
             errors = [
-                f"{name}: {result}"
+                f"{name}: {describe(result)}"
                 for name, result in zip(("Swiggy", "Zomato"), results)
                 if isinstance(result, Exception)
             ]
@@ -351,7 +356,7 @@ class MenuScreen(Screen[None]):
         swiggy_menu = results[0] if isinstance(results[0], list) else []
         zomato_menu = results[1] if isinstance(results[1], list) else []
         errors = [
-            f"{'Swiggy' if i == 0 else 'Zomato'} menu: {r}"
+            f"{'Swiggy' if i == 0 else 'Zomato'} menu: {describe(r)}"
             for i, r in enumerate(results)
             if isinstance(r, Exception)
         ]
