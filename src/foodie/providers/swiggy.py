@@ -624,15 +624,22 @@ class SwiggyProvider(BaseProvider):
         address_id: str,
         payment_method: str | None = None,
     ) -> Cart:
-        payload_items = [
-            {
-                "menu_item_id": it.item_id,
-                "quantity": it.quantity,
-                "variants": it.selected_variants,
-                "addons": it.selected_addons,
-            }
-            for it in items
-        ]
+        payload_items = []
+        for it in items:
+            # Items use either the legacy "variants" or the "variantsV2" field, never both.
+            v2 = any(v.get("_format") == "v2" for v in it.selected_variants)
+            variants = [
+                {k: val for k, val in v.items() if k != "_format"}
+                for v in it.selected_variants
+            ]
+            payload_items.append(
+                {
+                    "menu_item_id": it.item_id,
+                    "quantity": it.quantity,
+                    "variantsV2" if v2 else "variants": variants,
+                    "addons": it.selected_addons,
+                }
+            )
         res = await self._call_tool(
             "update_food_cart",
             {
