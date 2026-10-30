@@ -1166,7 +1166,9 @@ class ZomatoProvider(BaseProvider):
                 placed=item.get("is_order_placed"),
             ),
             eta_mins=_int_or_none(item.get("edt")),
-            status_message=item.get("message") or item.get("order_status") or "",
+            status_message=(item.get("message") or "").strip()
+            or item.get("order_status")
+            or "",
             delivery_partner_name=rider.get("name"),
             delivery_partner_phone=rider.get("phone_number"),
             raw=item,

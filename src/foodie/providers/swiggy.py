@@ -1088,9 +1088,14 @@ class SwiggyProvider(BaseProvider):
             else:
                 order_data = res
 
-        status_str = (
-            order_data.get("orderStatus") or res.get("status") or "OUT_FOR_DELIVERY"
-        ).upper()
+        if not order_data.get("orderStatus") and not res.get("status"):
+            # Only active orders have live tracking; don't invent a status for the rest.
+            raise LookupError(
+                str(res.get("statusMessage") or f"No tracking information for order {order_id}")
+                if isinstance(res, dict)
+                else f"No tracking information for order {order_id}"
+            )
+        status_str = (order_data.get("orderStatus") or res.get("status")).upper()
         if "DELIVERED" in status_str:
             status = OrderStatus.DELIVERED
         elif "CANCEL" in status_str:
