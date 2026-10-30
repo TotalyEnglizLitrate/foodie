@@ -518,7 +518,7 @@ class CartScreen(Screen[None]):
         if placed:
             cart.lines.clear()
             self.app.pop_screen()
-            self.notify(f"{TITLES[key]} order {placement.order_id} placed.")
+            self.notify(f"{TITLES[key]} order {placement.order_id} placed. Press o to track it.")
         else:
             self.query_one("#cart-status", Static).update(
                 f"{TITLES[key]} order {placement.order_id} is not confirmed — check the {TITLES[key]} app."

@@ -19,6 +19,7 @@ from foodie.providers.base import BaseProvider
 from foodie.providers.swiggy import SwiggyProvider
 from foodie.providers.zomato import ZomatoProvider
 from foodie.tui_cart import AddItemModal, CartScreen, CartState, ProviderContext
+from foodie.tui_track import OrdersScreen
 
 
 @dataclass
@@ -204,6 +205,7 @@ class RestaurantsScreen(Screen[None]):
         self.foodie.address_labels.update({a.id: _address_label(a) for a in addresses})
         if addresses:
             select.value = addresses[0].id
+            self.foodie.address_ids[key] = addresses[0].id
             return None
         return f"{provider.display_name}: no saved addresses"
 
@@ -241,6 +243,7 @@ class RestaurantsScreen(Screen[None]):
         z_address = self.query_one("#zomato-address", Select).value
         if s_address is Select.BLANK or z_address is Select.BLANK:
             return None
+        self.foodie.address_ids.update(swiggy=str(s_address), zomato=str(z_address))
         return str(s_address), str(z_address)
 
     async def action_search(self) -> None:
@@ -430,7 +433,7 @@ class MenuScreen(Screen[None]):
 
 class FoodieTui(App[None]):
     TITLE = "Foodie — Swiggy × Zomato"
-    BINDINGS = [("c", "cart", "Cart")]
+    BINDINGS = [("c", "cart", "Cart"), ("o", "orders", "Orders")]
 
     def __init__(self) -> None:
         super().__init__()
@@ -439,6 +442,11 @@ class FoodieTui(App[None]):
         self.providers: dict[str, BaseProvider] = {"swiggy": self.swiggy, "zomato": self.zomato}
         self.cart = CartState()
         self.address_labels: dict[str, str] = {}
+        self.address_ids: dict[str, str] = {}
+
+    def action_orders(self) -> None:
+        if not isinstance(self.screen, OrdersScreen):
+            self.push_screen(OrdersScreen())
 
     def action_cart(self) -> None:
         if isinstance(self.screen, CartScreen):
