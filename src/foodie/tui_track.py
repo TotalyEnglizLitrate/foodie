@@ -102,9 +102,10 @@ class OrdersScreen(Screen[None]):
             orders = await self.foodie.providers[key].get_orders(address_id)
             return [(key, order) for order in orders]
 
-        results = await asyncio.gather(
-            *(fetch(k) for k in TITLES), return_exceptions=True
-        )
+        async with self.foodie.busy("Loading your Swiggy and Zomato orders…"):
+            results = await asyncio.gather(
+                *(fetch(k) for k in TITLES), return_exceptions=True
+            )
         errors = [
             f"{TITLES[k]}: {r}" for k, r in zip(TITLES, results) if isinstance(r, Exception)
         ]
@@ -179,12 +180,15 @@ class TrackScreen(Screen[None]):
         self.refresh_loop()
 
     async def action_refresh(self) -> None:
-        await self._fetch()
+        await self._fetch(blocking=True)
 
     @work(exclusive=True)
     async def refresh_loop(self) -> None:
+        first = True
         while True:
-            tracking = await self._fetch()
+            # Only the first load shows the popup; background refreshes stay quiet.
+            tracking = await self._fetch(blocking=first)
+            first = False
             if tracking is None or tracking.status in TERMINAL:
                 return
             await asyncio.sleep(self._interval(tracking))
@@ -196,9 +200,13 @@ class TrackScreen(Screen[None]):
             return max(float(tracking.poll_interval_secs), MIN_REFRESH_SECONDS)
         return REFRESH_SECONDS
 
-    async def _fetch(self) -> OrderTracking | None:
+    async def _fetch(self, blocking: bool = False) -> OrderTracking | None:
         try:
-            tracking = await self.foodie.providers[self.key].track_order(self.order.order_id)
+            if blocking:
+                async with self.foodie.busy("Loading order tracking…"):
+                    tracking = await self.foodie.providers[self.key].track_order(self.order.order_id)
+            else:
+                tracking = await self.foodie.providers[self.key].track_order(self.order.order_id)
         except LookupError as exc:
             self._show(None, f"No live tracking for this order ({exc}).")
             return None

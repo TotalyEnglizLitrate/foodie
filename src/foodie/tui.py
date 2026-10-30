@@ -18,6 +18,7 @@ from foodie.models import Address, MenuItem, Restaurant
 from foodie.providers.base import BaseProvider
 from foodie.providers.swiggy import SwiggyProvider
 from foodie.providers.zomato import ZomatoProvider
+from foodie.tui_busy import Busy
 from foodie.tui_cart import AddItemModal, CartScreen, CartState, ProviderContext
 from foodie.tui_track import OrdersScreen
 
@@ -175,9 +176,10 @@ class RestaurantsScreen(Screen[None]):
         return getattr(self.foodie, key)
 
     async def load_addresses(self) -> None:
-        results = await asyncio.gather(
-            self.load_provider("swiggy"), self.load_provider("zomato")
-        )
+        async with self.foodie.busy("Loading your saved delivery addresses…"):
+            results = await asyncio.gather(
+                self.load_provider("swiggy"), self.load_provider("zomato")
+            )
         errors = [e for e in results if e]
         self.query_one("#status", Static).update(
             " · ".join(errors) if errors
@@ -228,7 +230,8 @@ class RestaurantsScreen(Screen[None]):
                 ok = await authenticate_interactive(provider, log=status.update)
                 if not ok:
                     return
-            error = await self.load_provider(key)
+            async with self.foodie.busy(f"Loading {provider.display_name} addresses…"):
+                error = await self.load_provider(key)
             status.update(error or f"{provider.display_name} ready.")
         except Exception as exc:
             status.update(f"{provider.display_name} auth failed: {exc}")
@@ -265,11 +268,12 @@ class RestaurantsScreen(Screen[None]):
         button.disabled = True
         status.update("Searching Swiggy and Zomato…")
         try:
-            results = await asyncio.gather(
-                self.foodie.swiggy.search_restaurants(query, addresses[0]),
-                self.foodie.zomato.search_restaurants(query, addresses[1]),
-                return_exceptions=True,
-            )
+            async with self.foodie.busy(f"Searching Swiggy and Zomato for “{query}”…"):
+                results = await asyncio.gather(
+                    self.foodie.swiggy.search_restaurants(query, addresses[0]),
+                    self.foodie.zomato.search_restaurants(query, addresses[1]),
+                    return_exceptions=True,
+                )
             errors = [
                 f"{name}: {describe(result)}"
                 for name, result in zip(("Swiggy", "Zomato"), results)
@@ -348,11 +352,12 @@ class MenuScreen(Screen[None]):
                 return []
             return await provider.get_menu(restaurant.id, address)
 
-        results = await asyncio.gather(
-            fetch(self.foodie.swiggy, pair.swiggy, self.swiggy_address),
-            fetch(self.foodie.zomato, pair.zomato, self.zomato_address),
-            return_exceptions=True,
-        )
+        async with self.foodie.busy(f"Loading the menu for {(pair.swiggy or pair.zomato).name}…"):
+            results = await asyncio.gather(
+                fetch(self.foodie.swiggy, pair.swiggy, self.swiggy_address),
+                fetch(self.foodie.zomato, pair.zomato, self.zomato_address),
+                return_exceptions=True,
+            )
         swiggy_menu = results[0] if isinstance(results[0], list) else []
         zomato_menu = results[1] if isinstance(results[1], list) else []
         errors = [
@@ -448,6 +453,7 @@ class FoodieTui(App[None]):
         self.cart = CartState()
         self.address_labels: dict[str, str] = {}
         self.address_ids: dict[str, str] = {}
+        self.busy = Busy(self)
 
     def action_orders(self) -> None:
         if not isinstance(self.screen, OrdersScreen):

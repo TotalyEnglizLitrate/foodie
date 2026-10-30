@@ -539,7 +539,8 @@ class CartScreen(Screen[None]):
             except Exception as exc:
                 totals.update(f"[b]{TITLES[key]} could not price the cart:[/b] {exc}")
 
-        await asyncio.gather(*(price(k) for k in self.providers if only in (None, k)))
+        async with self.foodie.busy("Pricing your cart with the providers…"):
+            await asyncio.gather(*(price(k) for k in self.providers if only in (None, k)))
         status.update("Prices above come from each provider's live cart. Use the Order button to place an order with one provider.")
 
     @staticmethod
@@ -576,7 +577,8 @@ class CartScreen(Screen[None]):
         provider = self.foodie.providers[key]
         address_id = cart.addresses[key]
         try:
-            available = await provider.get_cart_coupons(cart.restaurants[key].id, address_id, priced)
+            async with self.foodie.busy(f"Fetching {TITLES[key]} coupons…"):
+                available = await provider.get_cart_coupons(cart.restaurants[key].id, address_id, priced)
         except Exception as exc:
             available = []
             self.notify(f"Could not list coupons: {exc}", severity="warning")
@@ -591,7 +593,8 @@ class CartScreen(Screen[None]):
             self.notify("Coupon removed and the cart re-priced.")
             return
         try:
-            result = await provider.apply_coupon(code, address_id)
+            async with self.foodie.busy(f"Applying {code}…"):
+                result = await provider.apply_coupon(code, address_id)
         except Exception as exc:
             self.notify(f"{TITLES[key]} rejected {code}: {exc}", severity="error", timeout=10)
             return
@@ -624,7 +627,8 @@ class CartScreen(Screen[None]):
         if key == "swiggy":
             # Swiggy lists what this cart can actually pay with; Zomato was priced for it.
             try:
-                methods = await provider.get_payment_options(address_id)
+                async with self.foodie.busy("Checking Swiggy's payment options…"):
+                    methods = await provider.get_payment_options(address_id)
             except Exception as exc:
                 self.notify(f"Could not load payment options: {exc}", severity="error")
                 return
@@ -657,7 +661,8 @@ class CartScreen(Screen[None]):
             return
         self.query_one("#cart-status", Static).update(f"Placing your {TITLES[key]} order…")
         try:
-            placement = await place_order(key, provider, choice, address_id)
+            async with self.foodie.busy(f"Placing your {TITLES[key]} order…"):
+                placement = await place_order(key, provider, choice, address_id)
         except Exception as exc:
             self.notify(f"{TITLES[key]} couldn't place the order: {exc}", severity="error", timeout=10)
             self.query_one("#cart-status", Static).update("Order not placed.")
