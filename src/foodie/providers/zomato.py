@@ -1165,5 +1165,6 @@ class ZomatoProvider(BaseProvider):
             or "",
             delivery_partner_name=rider.get("name"),
             delivery_partner_phone=rider.get("phone_number"),
+            tracking_url=item.get("tracking_url") or None,
             raw=item,
         )

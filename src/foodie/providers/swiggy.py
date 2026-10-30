@@ -1169,6 +1169,12 @@ class SwiggyProvider(BaseProvider):
             delivery_partner_name=partner_dict.get("name"),
             delivery_partner_phone=partner_dict.get("phone"),
             poll_interval_secs=int(poll) if poll else None,
+            tracking_url=None
+            if status in (OrderStatus.DELIVERED, OrderStatus.CANCELLED)
+            else str(
+                order_data.get("trackUrl")
+                or f"https://www.swiggy.com/track-order/{order_id}"
+            ),
             raw={"tracking": res, "delivery_status": delivery},
         )
 

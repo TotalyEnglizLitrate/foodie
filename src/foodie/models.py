@@ -127,6 +127,7 @@ class OrderTracking:
     delivery_partner_name: str | None = None
     delivery_partner_phone: str | None = None
     poll_interval_secs: int | None = None  # provider's recommended refresh cadence
+    tracking_url: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
 

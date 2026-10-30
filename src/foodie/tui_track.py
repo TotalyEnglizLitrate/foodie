@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import webbrowser
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
@@ -144,12 +145,23 @@ class TrackScreen(Screen[None]):
     #track-note { padding: 0 2; color: $text-muted; height: auto; }
     """
 
-    BINDINGS = [("escape", "app.pop_screen", "Back"), ("r", "refresh", "Refresh")]
+    BINDINGS = [
+        ("escape", "app.pop_screen", "Back"),
+        ("r", "refresh", "Refresh"),
+        ("t", "open_link", "Open tracking page"),
+    ]
 
     def __init__(self, key: str, order: OrderSummary) -> None:
         super().__init__()
         self.key = key
         self.order = order
+        self.tracking_url: str | None = None
+
+    def action_open_link(self) -> None:
+        if self.tracking_url:
+            webbrowser.open(self.tracking_url)
+        else:
+            self.notify("This order has no tracking page.", severity="warning")
 
     @property
     def foodie(self) -> "FoodieTui":
@@ -204,6 +216,7 @@ class TrackScreen(Screen[None]):
     def _show(self, tracking: OrderTracking | None, note: str) -> None:
         order = self.order
         status = tracking.status if tracking else order.status
+        self.tracking_url = tracking.tracking_url if tracking else None
         lines = [
             f"[b]{order.restaurant_name}[/b]  ·  order {order.order_id}",
             f"{order.items_summary}" if order.items_summary else "",
@@ -221,5 +234,7 @@ class TrackScreen(Screen[None]):
                 if tracking.delivery_partner_phone:
                     partner += f" ({tracking.delivery_partner_phone})"
                 lines.append(f"Rider:    {partner}")
+            if tracking.tracking_url:
+                lines.append(f"Track:    {tracking.tracking_url}  (press t to open)")
         self.query_one("#track", Static).update("\n".join(lines))
         self.query_one("#track-note", Static).update(note)
