@@ -45,7 +45,11 @@ class SwiggyProvider(BaseProvider):
 
     def __init__(self, store: SecretStore | None = None) -> None:
         self.store: SecretStore = store or SecretStore()
-        self._http: httpx.AsyncClient = httpx.AsyncClient(timeout=30.0)
+        # retries only re-attempts failed connections (including TLS handshakes),
+        # so the request never reached the server and replaying it is safe.
+        self._http: httpx.AsyncClient = httpx.AsyncClient(
+            timeout=30.0, transport=httpx.AsyncHTTPTransport(retries=4)
+        )
         self._active_address_id: str | None = None
         self._address_coords: dict[str, tuple[float, float]] = {}
         self._cart_id: str | None = None

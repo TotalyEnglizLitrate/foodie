@@ -124,7 +124,11 @@ class ZomatoProvider(BaseProvider):
 
     def __init__(self, store: SecretStore | None = None) -> None:
         self.store: SecretStore = store or SecretStore()
-        self._http: httpx.AsyncClient = httpx.AsyncClient(timeout=30.0)
+        # retries only re-attempts failed connections (including TLS handshakes),
+        # so the request never reached the server and replaying it is safe.
+        self._http: httpx.AsyncClient = httpx.AsyncClient(
+            timeout=30.0, transport=httpx.AsyncHTTPTransport(retries=4)
+        )
         self._active_address_id: str | None = None
         self._cart_response: dict[str, Any] | None = None  # pyright: ignore[reportExplicitAny]
         self._cart_payment_type: str | None = None
