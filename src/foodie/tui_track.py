@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 TITLES = {"swiggy": "Swiggy", "zomato": "Zomato"}
 TERMINAL = {OrderStatus.DELIVERED, OrderStatus.CANCELLED, OrderStatus.FAILED}
 REFRESH_SECONDS = 20.0
+MIN_REFRESH_SECONDS = 10.0  # Swiggy asks clients not to poll faster
 
 
 def _price(value: float | None) -> str:
@@ -148,7 +149,14 @@ class TrackScreen(Screen[None]):
             tracking = await self._fetch()
             if tracking is None or tracking.status in TERMINAL:
                 return
-            await asyncio.sleep(REFRESH_SECONDS)
+            await asyncio.sleep(self._interval(tracking))
+
+    @staticmethod
+    def _interval(tracking: OrderTracking) -> float:
+        """Honour the provider's recommended cadence, within sane bounds."""
+        if tracking.poll_interval_secs:
+            return max(float(tracking.poll_interval_secs), MIN_REFRESH_SECONDS)
+        return REFRESH_SECONDS
 
     async def _fetch(self) -> OrderTracking | None:
         try:
@@ -162,7 +170,7 @@ class TrackScreen(Screen[None]):
         note = (
             "Order finished."
             if tracking.status in TERMINAL
-            else f"Refreshes every {int(REFRESH_SECONDS)}s · r to refresh now."
+            else f"Refreshes every {int(self._interval(tracking))}s · r to refresh now."
         )
         self._show(tracking, note)
         return tracking
