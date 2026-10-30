@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import webbrowser
+from collections.abc import Callable
 from urllib.parse import parse_qs, urlparse
 
 from foodie.providers.base import BaseProvider
@@ -11,13 +12,18 @@ logger = logging.getLogger(__name__)
 
 
 async def authenticate_interactive(
-    provider: BaseProvider, port: int = 8080, timeout: float = 180.0
+    provider: BaseProvider,
+    port: int = 8080,
+    timeout: float = 180.0,
+    log: Callable[[str], None] = print,
 ) -> bool:
     """
     Runs an interactive OAuth 2.1 PKCE login flow for a provider.
     1. Spins up a temporary local HTTP server to receive the callback.
     2. Opens the browser for phone + OTP login.
     3. Captures the authorization code and exchanges it for tokens.
+
+    Progress messages go to ``log`` (stdout by default) so a TUI can redirect them.
     """
     redirect_uri = f"http://localhost:{port}/callback"
     auth_url, verifier = await provider.get_auth_url(redirect_uri)
@@ -93,28 +99,24 @@ async def authenticate_interactive(
     server = await asyncio.start_server(handle_client, "127.0.0.1", port)
     logger.info("Local auth callback server listening on %s", redirect_uri)
 
-    print("\n" + "=" * 60)
-    print(f"🔑 Authenticating with {provider.display_name}")
-    print("=" * 60)
-    print("\nOpening browser... If it does not open automatically, visit:")
-    print(f"\n👉 {auth_url}\n")
-    print(f"Waiting for authentication (timeout: {int(timeout)}s)...")
+    log(f"Authenticating with {provider.display_name}. Opening browser; if it does not open, visit: {auth_url}")
+    log(f"Waiting for authentication (timeout: {int(timeout)}s)...")
 
     webbrowser.open(auth_url)
 
     try:
         code = await asyncio.wait_for(code_future, timeout=timeout)
     except TimeoutError:
-        print("\n❌ Authentication timed out. No authorization code received.")
+        log("Authentication timed out. No authorization code received.")
         return False
     finally:
         server.close()
         await server.wait_closed()
 
-    print("✓ Authorization code received. Exchanging for tokens...")
+    log("Authorization code received. Exchanging for tokens...")
     success = await provider.complete_auth(code, verifier, redirect_uri)
     if success:
-        print("✓ Tokens received and stored securely in D-Bus keyring!")
+        log("Tokens received and stored securely.")
     else:
-        print("❌ Failed to exchange authorization code for tokens.")
+        log("Failed to exchange authorization code for tokens.")
     return success

@@ -12,6 +12,7 @@ from textual.containers import Horizontal
 from textual.screen import Screen
 from textual.widgets import Button, DataTable, Footer, Header, Input, Select, Static
 
+from foodie.auth import authenticate_interactive
 from foodie.models import Address, Restaurant
 from foodie.providers.base import BaseProvider
 from foodie.providers.swiggy import SwiggyProvider
@@ -122,6 +123,8 @@ class RestaurantsScreen(Screen[None]):
     #search-row { height: 3; }
     #query { width: 1fr; }
     #search { width: 16; }
+    #auth-row { height: 3; }
+    #auth-row Button { width: 1fr; }
     #addresses { height: 3; }
     #swiggy-address, #zomato-address { width: 1fr; }
     #status { height: 2; padding: 0 1; }
@@ -143,6 +146,9 @@ class RestaurantsScreen(Screen[None]):
         with Horizontal(id="search-row"):
             yield Input(placeholder="Restaurant name or cuisine…", id="query")
             yield Button("Search both", id="search", variant="primary")
+        with Horizontal(id="auth-row"):
+            yield Button("Swiggy: checking…", id="auth-swiggy", disabled=True)
+            yield Button("Zomato: checking…", id="auth-zomato", disabled=True)
         with Horizontal(id="addresses"):
             yield Select([], prompt="Swiggy delivery address", id="swiggy-address", allow_blank=True)
             yield Select([], prompt="Zomato delivery address", id="zomato-address", allow_blank=True)
@@ -157,36 +163,67 @@ class RestaurantsScreen(Screen[None]):
         self.query_one("#results", DataTable).focus()
         await self.load_addresses()
 
+    def _provider(self, key: str) -> BaseProvider:
+        return getattr(self.foodie, key)
+
     async def load_addresses(self) -> None:
-        status = self.query_one("#status", Static)
-        app = self.foodie
-
-        async def fetch(key: str, provider: BaseProvider) -> tuple[str, list[Address] | Exception]:
-            try:
-                if not await provider.is_authenticated():
-                    return key, PermissionError(f"{provider.display_name} is not authenticated")
-                return key, await provider.get_addresses()
-            except Exception as exc:
-                return key, exc
-
         results = await asyncio.gather(
-            fetch("swiggy", app.swiggy), fetch("zomato", app.zomato)
+            self.load_provider("swiggy"), self.load_provider("zomato")
         )
-        errors: list[str] = []
-        for key, result in results:
-            if isinstance(result, Exception):
-                errors.append(f"{key.title()}: {result}")
-                continue
-            select = self.query_one(f"#{key}-address", Select)
-            select.set_options(((_address_label(a), a.id) for a in result))
-            if result:
-                select.value = result[0].id
-            else:
-                errors.append(f"{key.title()}: no saved addresses")
-        status.update(
+        errors = [e for e in results if e]
+        self.query_one("#status", Static).update(
             " · ".join(errors) if errors
             else "Addresses loaded. Search, then press Enter on a row to open its menu."
         )
+
+    async def load_provider(self, key: str) -> str | None:
+        """Refresh a provider's auth button and address list; returns an error message."""
+        provider = self._provider(key)
+        button = self.query_one(f"#auth-{key}", Button)
+        select = self.query_one(f"#{key}-address", Select)
+        try:
+            authed = await provider.is_authenticated()
+        except Exception as exc:
+            authed = False
+            error: str | None = f"{provider.display_name}: {exc}"
+        else:
+            error = None
+        button.label = f"{provider.display_name}: log out" if authed else f"{provider.display_name}: log in"
+        button.variant = "success" if authed else "warning"
+        button.disabled = False
+        if not authed:
+            select.set_options([])
+            return error or f"{provider.display_name} is not authenticated — press its log in button"
+        try:
+            addresses = await provider.get_addresses()
+        except Exception as exc:
+            return f"{provider.display_name}: {exc}"
+        select.set_options(((_address_label(a), a.id) for a in addresses))
+        if addresses:
+            select.value = addresses[0].id
+            return None
+        return f"{provider.display_name}: no saved addresses"
+
+    @on(Button.Pressed, "#auth-swiggy, #auth-zomato")
+    async def auth_pressed(self, event: Button.Pressed) -> None:
+        key = (event.button.id or "").removeprefix("auth-")
+        provider = self._provider(key)
+        status = self.query_one("#status", Static)
+        event.button.disabled = True
+        try:
+            if await provider.is_authenticated():
+                await provider.logout()
+                status.update(f"Logged out of {provider.display_name}.")
+            else:
+                ok = await authenticate_interactive(provider, log=status.update)
+                if not ok:
+                    return
+            error = await self.load_provider(key)
+            status.update(error or f"{provider.display_name} ready.")
+        except Exception as exc:
+            status.update(f"{provider.display_name} auth failed: {exc}")
+        finally:
+            event.button.disabled = False
 
     @on(Button.Pressed, "#search")
     async def search_pressed(self) -> None:
