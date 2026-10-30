@@ -825,42 +825,11 @@ class ZomatoProvider(BaseProvider):
 
     @override
     async def apply_coupon(self, code: str, address_id: str | None = None) -> Cart:
-        if self._cart_response is None or self._cart_restaurant_id is None:
-            raise RuntimeError("Create a Zomato cart before applying a coupon.")
-
-        cart = self._parse_cart(self._cart_response)
-        payload_items = [
-            {
-                "variant_id": item.item_id,
-                "quantity": item.quantity,
-                "add_ons": [
-                    {
-                        "id": str(addon.get("id") or addon.get("choice_id")),
-                        "quantity": int(addon.get("quantity", 1)),
-                    }
-                    for addon in item.selected_addons
-                    if addon.get("id") or addon.get("choice_id")
-                ]
-                or None,
-            }
-            for item in cart.items
-        ]
-        resolved_address_id = self._address_id(address_id)
-        if not self._cart_payment_type:
-            raise RuntimeError("Zomato cart is missing its payment type.")
-        res = await self._call_tool(
-            "create_cart",
-            {
-                "res_id": self._cart_restaurant_id,
-                "address_id": resolved_address_id,
-                "items": payload_items,
-                "payment_type": self._cart_payment_type,
-                "promo_code": code,
-            },
+        # create_cart takes no promo_code (its schema rejects extra arguments) and
+        # Zomato has no coupon tool, so offers are applied server-side only.
+        raise NotImplementedError(
+            "Zomato's MCP server doesn't support applying coupon codes."
         )
-        updated_cart = self._extract_cart(res)
-        self._cart_response = updated_cart
-        return self._parse_cart(updated_cart)
 
     @override
     async def get_cart_coupons(

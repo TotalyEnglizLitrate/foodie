@@ -18,6 +18,7 @@ from textual.widgets import (
     Header,
     Input,
     Label,
+    OptionList,
     RadioButton,
     RadioSet,
     Select,
@@ -26,11 +27,12 @@ from textual.widgets import (
     TabbedContent,
     TabPane,
 )
+from textual.widgets.option_list import Option
 from textual.widgets.selection_list import Selection
 
 from foodie import customize
 from foodie.customize import CartLine, OptionGroup
-from foodie.models import Cart, MenuItem, Restaurant
+from foodie.models import Cart, CartCoupon, MenuItem, Restaurant
 from foodie.tui_order import OrderConfirmModal, OrderStatusScreen, place_order
 
 if TYPE_CHECKING:
@@ -305,11 +307,89 @@ class AddItemModal(ModalScreen["CartLine | None"]):
         self.dismiss(CartLine(self.item_name, quantity, entries))
 
 
+class CouponModal(ModalScreen["str | None"]):
+    """Pick or type a coupon. Dismisses with the code, "" to remove, or None to cancel."""
+
+    DEFAULT_CSS = """
+    CouponModal { align: center middle; }
+    #coupon-dialog { width: 80; height: auto; max-height: 90%; border: thick $primary; background: $surface; padding: 1 2; }
+    #coupon-list { height: auto; max-height: 14; margin: 1 0; }
+    #coupon-buttons { height: 3; align-horizontal: right; margin-top: 1; }
+    """
+
+    BINDINGS = [("escape", "dismiss_modal", "Cancel")]
+
+    def __init__(self, provider_name: str, coupons: list[CartCoupon], applied: str | None) -> None:
+        super().__init__()
+        self.provider_name = provider_name
+        self.coupons = coupons
+        self.applied = applied
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="coupon-dialog"):
+            yield Label(f"[b]{self.provider_name} coupons[/b]")
+            if self.applied:
+                yield Static(f"Applied: [b]{self.applied}[/b]")
+            if self.coupons:
+                yield OptionList(
+                    *(
+                        Option(self._prompt(c), id=c.code, disabled=not c.applicable)
+                        for c in self.coupons
+                    ),
+                    id="coupon-list",
+                )
+            else:
+                yield Static("No coupons were listed for this cart. You can still enter a code.", id="coupon-none")
+            yield Input(placeholder="Coupon code", id="coupon-code")
+            with Horizontal(id="coupon-buttons"):
+                yield Button("Apply", id="coupon-apply", variant="primary")
+                if self.applied:
+                    yield Button("Remove", id="coupon-remove")
+                yield Button("Cancel", id="coupon-cancel")
+
+    @staticmethod
+    def _prompt(coupon: CartCoupon) -> str:
+        text = f"[b]{coupon.code}[/b]" + (" ★" if coupon.recommended else "")
+        detail = coupon.title or coupon.description
+        if detail:
+            text += f" — {detail}"
+        if coupon.discount:
+            text += f" (save {_price(coupon.discount)})"
+        if not coupon.applicable:
+            text += " [i](not applicable)[/i]"
+        return text
+
+    def action_dismiss_modal(self) -> None:
+        self.dismiss(None)
+
+    @on(OptionList.OptionSelected, "#coupon-list")
+    def picked(self, event: OptionList.OptionSelected) -> None:
+        self.query_one("#coupon-code", Input).value = event.option.id or ""
+
+    @on(Input.Submitted, "#coupon-code")
+    @on(Button.Pressed, "#coupon-apply")
+    def apply_code(self) -> None:
+        code = self.query_one("#coupon-code", Input).value.strip()
+        if code:
+            self.dismiss(code)
+        else:
+            self.notify("Pick a coupon or type a code.", severity="warning")
+
+    @on(Button.Pressed, "#coupon-remove")
+    def remove_coupon(self) -> None:
+        self.dismiss("")
+
+    @on(Button.Pressed, "#coupon-cancel")
+    def cancel_coupon(self) -> None:
+        self.dismiss(None)
+
+
 class CartPanel(Vertical):
     DEFAULT_CSS = """
     CartPanel { width: 1fr; border: round $primary; padding: 0 1; }
     CartPanel DataTable { height: 1fr; }
     CartPanel .totals { height: auto; padding: 1 0 0 0; }
+    CartPanel .panel-buttons { height: 3; }
     """
 
     def __init__(self, key: str, title: str) -> None:
@@ -324,7 +404,11 @@ class CartPanel(Vertical):
         table.add_columns("Item", "Options", "Qty", "Est.")
         yield table
         yield Static("Pricing…", classes="totals", id=f"totals-{self.key}")
-        yield Button(f"Order with {self.title}", id=f"order-{self.key}", variant="warning")
+        with Horizontal(classes="panel-buttons"):
+            # Zomato's MCP server has no coupon tool; it applies offers on its own.
+            if self.key == "swiggy":
+                yield Button("Coupon", id=f"coupon-{self.key}")
+            yield Button(f"Order with {self.title}", id=f"order-{self.key}", variant="warning")
 
 
 class CartScreen(Screen[None]):
@@ -350,6 +434,7 @@ class CartScreen(Screen[None]):
         self.payment: str | None = None
         self.providers: list[str] = []
         self.priced: dict[str, Cart] = {}
+        self.coupons: dict[str, str] = {}  # applied code per provider
 
     @property
     def foodie(self) -> "FoodieTui":
@@ -435,8 +520,21 @@ class CartScreen(Screen[None]):
                     cart.addresses[key],
                     payment_method=self.payment if key == "zomato" else None,
                 )
+                code = self.coupons.get(key)
+                if code:
+                    # update_cart rebuilds the cart, so put the coupon back.
+                    try:
+                        reapplied = await self.foodie.providers[key].apply_coupon(
+                            code, cart.addresses[key]
+                        )
+                        if reapplied.discount > 0:
+                            result = reapplied
+                        else:
+                            self.coupons.pop(key, None)
+                    except Exception:
+                        self.coupons.pop(key, None)
                 self.priced[key] = result
-                totals.update(self._totals(result))
+                totals.update(self._totals(result, self.coupons.get(key)))
             except Exception as exc:
                 totals.update(f"[b]{TITLES[key]} could not price the cart:[/b] {exc}")
 
@@ -444,7 +542,7 @@ class CartScreen(Screen[None]):
         status.update("Prices above come from each provider's live cart. Use the Order button to place an order with one provider.")
 
     @staticmethod
-    def _totals(cart: Cart) -> str:
+    def _totals(cart: Cart, coupon: str | None = None) -> str:
         rows = [("Items", cart.item_total), ("Delivery", cart.delivery_fee)]
         if cart.fees:
             rows.append(("Fees", cart.fees))
@@ -453,11 +551,57 @@ class CartScreen(Screen[None]):
             rows.append(("Discount", -cart.discount))
         lines = [f"{label:<10}{_price(value):>10}" for label, value in rows]
         lines.append(f"[b]{'Total':<10}{_price(cart.grand_total):>10}[/b]")
+        # Zomato reports offers it applied itself in promo_code.
+        promo = coupon or cart.raw.get("promo_code")
+        if promo:
+            lines.append(f"Coupon: {promo}")
         return "\n".join(lines)
 
     @on(Button.Pressed, "#panels Button")
-    def order_pressed(self, event: Button.Pressed) -> None:
-        self.order((event.button.id or "").removeprefix("order-"))
+    def panel_button(self, event: Button.Pressed) -> None:
+        action, _, key = (event.button.id or "").partition("-")
+        if action == "order":
+            self.order(key)
+        elif action == "coupon":
+            self.coupon(key)
+
+    @work(exclusive=True, group="coupon")
+    async def coupon(self, key: str) -> None:
+        cart = self.foodie.cart
+        priced = self.priced.get(key)
+        if priced is None:
+            self.notify(f"Price the {TITLES[key]} cart first.", severity="warning")
+            return
+        provider = self.foodie.providers[key]
+        address_id = cart.addresses[key]
+        try:
+            available = await provider.get_cart_coupons(cart.restaurants[key].id, address_id, priced)
+        except Exception as exc:
+            available = []
+            self.notify(f"Could not list coupons: {exc}", severity="warning")
+        code = await self.app.push_screen_wait(
+            CouponModal(TITLES[key], available, self.coupons.get(key))
+        )
+        if code is None:
+            return
+        if code == "":
+            self.coupons.pop(key, None)
+            await self._sync(only=key)
+            self.notify("Coupon removed and the cart re-priced.")
+            return
+        try:
+            result = await provider.apply_coupon(code, address_id)
+        except Exception as exc:
+            self.notify(f"{TITLES[key]} rejected {code}: {exc}", severity="error", timeout=10)
+            return
+        if result.discount <= 0:
+            # An auto-suggested coupon shows no discount; don't claim it was applied.
+            self.notify(f"{code} gave no discount on this cart, so it wasn't applied.", severity="warning")
+            return
+        self.coupons[key] = code
+        self.priced[key] = result
+        self.query_one(f"#totals-{key}", Static).update(self._totals(result, code))
+        self.notify(f"{code} applied — saving {_price(result.discount)}.")
 
     @work(exclusive=True)
     async def order(self, key: str) -> None:
