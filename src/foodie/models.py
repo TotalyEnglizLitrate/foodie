@@ -81,6 +81,7 @@ class Cart:
     item_total: float = 0.0
     delivery_fee: float = 0.0
     taxes: float = 0.0
+    fees: float = 0.0  # platform/packaging and other non-delivery charges
     discount: float = 0.0
     grand_total: float = 0.0
     raw: dict[str, Any] = field(default_factory=dict)

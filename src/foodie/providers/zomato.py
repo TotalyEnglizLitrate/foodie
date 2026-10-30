@@ -980,22 +980,32 @@ class ZomatoProvider(BaseProvider):
             _num(t.get("tax_amount"))
             for t in breakdown.get("taxes") or []
             if isinstance(t, dict)
+        ) + sum(
+            _num(t.get("tax_amount"))
+            for c in base_charges
+            for t in c.get("taxes") or []
+            if isinstance(t, dict)
         )
-        if cart.get("promo_discount_amount") is not None:
-            discount = _num(cart["promo_discount_amount"])
-        else:
-            discount = sum(_num(c.get("discount")) for c in base_charges)
+        # A charge's own ``discount`` (e.g. a waived delivery fee) is already
+        # reflected in its ``amount``, so only the promo discount is subtracted.
+        discount = _num(cart.get("promo_discount_amount"))
+        item_total = _num(cart.get("item_total"))
+        # The backend applies offers/charges, so trust final_amount rather
+        # than recomputing from line items (per create_cart's description).
+        grand_total = _num(cart.get("final_amount"))
+        # Whatever the breakdown doesn't itemise (platform fee, packaging, ...)
+        # is reported as fees so the displayed lines add up to the total.
+        fees = grand_total - item_total - delivery_fee - taxes + discount
 
         return Cart(
             restaurant_id=str(cart.get("res_id") or ""),
             items=parsed_items,
-            item_total=_num(cart.get("item_total")),
+            item_total=item_total,
             delivery_fee=delivery_fee,
             taxes=taxes,
+            fees=max(fees, 0.0),
             discount=discount,
-            # The backend applies offers/charges, so trust final_amount rather
-            # than recomputing from line items (per create_cart's description).
-            grand_total=_num(cart.get("final_amount")),
+            grand_total=grand_total,
             raw=cart,
         )
 

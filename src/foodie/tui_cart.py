@@ -440,7 +440,10 @@ class CartScreen(Screen[None]):
 
     @staticmethod
     def _totals(cart: Cart) -> str:
-        rows = [("Items", cart.item_total), ("Delivery", cart.delivery_fee), ("Taxes", cart.taxes)]
+        rows = [("Items", cart.item_total), ("Delivery", cart.delivery_fee)]
+        if cart.fees:
+            rows.append(("Fees", cart.fees))
+        rows.append(("Taxes", cart.taxes))
         if cart.discount:
             rows.append(("Discount", -cart.discount))
         lines = [f"{label:<10}{_price(value):>10}" for label, value in rows]
