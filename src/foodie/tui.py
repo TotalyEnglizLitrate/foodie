@@ -201,6 +201,7 @@ class RestaurantsScreen(Screen[None]):
         except Exception as exc:
             return f"{provider.display_name}: {exc}"
         select.set_options(((_address_label(a), a.id) for a in addresses))
+        self.foodie.address_labels.update({a.id: _address_label(a) for a in addresses})
         if addresses:
             select.value = addresses[0].id
             return None
@@ -437,6 +438,7 @@ class FoodieTui(App[None]):
         self.zomato = ZomatoProvider()
         self.providers: dict[str, BaseProvider] = {"swiggy": self.swiggy, "zomato": self.zomato}
         self.cart = CartState()
+        self.address_labels: dict[str, str] = {}
 
     def action_cart(self) -> None:
         if isinstance(self.screen, CartScreen):

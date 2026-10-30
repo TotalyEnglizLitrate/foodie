@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
-from textual import on
+from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
@@ -31,6 +31,7 @@ from textual.widgets.selection_list import Selection
 from foodie import customize
 from foodie.customize import CartLine, OptionGroup
 from foodie.models import Cart, MenuItem, Restaurant
+from foodie.tui_order import OrderConfirmModal, OrderStatusScreen, place_order
 
 if TYPE_CHECKING:
     from foodie.tui import FoodieTui
@@ -323,6 +324,7 @@ class CartPanel(Vertical):
         table.add_columns("Item", "Options", "Qty", "Est.")
         yield table
         yield Static("Pricing…", classes="totals", id=f"totals-{self.key}")
+        yield Button(f"Order with {self.title}", id=f"order-{self.key}", variant="warning")
 
 
 class CartScreen(Screen[None]):
@@ -347,6 +349,7 @@ class CartScreen(Screen[None]):
         super().__init__()
         self.payment: str | None = None
         self.providers: list[str] = []
+        self.priced: dict[str, Cart] = {}
 
     @property
     def foodie(self) -> "FoodieTui":
@@ -421,6 +424,7 @@ class CartScreen(Screen[None]):
 
         async def price(key: str) -> None:
             totals = self.query_one(f"#totals-{key}", Static)
+            self.priced.pop(key, None)
             if key == "zomato" and self.payment is None:
                 totals.update("Choose a Zomato payment type above to price this cart.")
                 return
@@ -431,12 +435,13 @@ class CartScreen(Screen[None]):
                     cart.addresses[key],
                     payment_method=self.payment if key == "zomato" else None,
                 )
+                self.priced[key] = result
                 totals.update(self._totals(result))
             except Exception as exc:
                 totals.update(f"[b]{TITLES[key]} could not price the cart:[/b] {exc}")
 
         await asyncio.gather(*(price(k) for k in self.providers if only in (None, k)))
-        status.update("Prices above come from each provider's live cart. Order placement isn't available in the TUI yet.")
+        status.update("Prices above come from each provider's live cart. Use the Order button to place an order with one provider.")
 
     @staticmethod
     def _totals(cart: Cart) -> str:
@@ -449,6 +454,75 @@ class CartScreen(Screen[None]):
         lines = [f"{label:<10}{_price(value):>10}" for label, value in rows]
         lines.append(f"[b]{'Total':<10}{_price(cart.grand_total):>10}[/b]")
         return "\n".join(lines)
+
+    @on(Button.Pressed, "#panels Button")
+    def order_pressed(self, event: Button.Pressed) -> None:
+        self.order((event.button.id or "").removeprefix("order-"))
+
+    @work(exclusive=True)
+    async def order(self, key: str) -> None:
+        cart = self.foodie.cart
+        priced = self.priced.get(key)
+        if priced is None:
+            self.notify(
+                f"Price the {TITLES[key]} cart first"
+                + (" (choose a payment type)." if key == "zomato" else "."),
+                severity="warning",
+            )
+            return
+        provider = self.foodie.providers[key]
+        address_id = cart.addresses[key]
+        if key == "zomato":
+            payments = [("Cash on delivery" if self.payment == "cash_on_delivery" else "UPI QR", "cash" if self.payment == "cash_on_delivery" else "upi")]
+        else:
+            try:
+                methods = await provider.get_payment_options(address_id)
+            except Exception as exc:
+                self.notify(f"Could not load payment options: {exc}", severity="error")
+                return
+            payments = [
+                ("UPI QR (scan to pay)", "upi") if m.method_type == "UPI_QR" else ("Cash on delivery", "cash")
+                for m in methods
+                if m.method_type in ("UPI_QR", "COD")
+            ]
+            payments = list(dict.fromkeys(payments))
+            if not payments:
+                self.notify("Swiggy offers no QR or cash payment for this cart.", severity="error")
+                return
+        lines = [
+            f"{line.quantity} × {line.name}" + (f" ({line.entries[key].summary})" if line.entries[key].summary else "")
+            for line in cart.lines
+        ]
+        choice = await self.app.push_screen_wait(
+            OrderConfirmModal(
+                TITLES[key],
+                cart.restaurant_name,
+                self.foodie.address_labels.get(address_id, address_id),
+                lines,
+                priced.grand_total,
+                payments,
+            )
+        )
+        if choice is None:
+            return
+        self.query_one("#cart-status", Static).update(f"Placing your {TITLES[key]} order…")
+        try:
+            placement = await place_order(key, provider, choice, address_id)
+        except Exception as exc:
+            self.notify(f"{TITLES[key]} couldn't place the order: {exc}", severity="error", timeout=10)
+            self.query_one("#cart-status", Static).update("Order not placed.")
+            return
+        placed = await self.app.push_screen_wait(
+            OrderStatusScreen(key, provider, placement, priced.grand_total)
+        )
+        if placed:
+            cart.lines.clear()
+            self.app.pop_screen()
+            self.notify(f"{TITLES[key]} order {placement.order_id} placed.")
+        else:
+            self.query_one("#cart-status", Static).update(
+                f"{TITLES[key]} order {placement.order_id} is not confirmed — check the {TITLES[key]} app."
+            )
 
     def _cursor_index(self) -> int | None:
         focused = self.focused
