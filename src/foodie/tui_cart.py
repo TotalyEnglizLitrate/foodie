@@ -122,10 +122,19 @@ class OptionsPanel(VerticalScroll):
         note = self.query_one(f"#{self.key}-note", Static)
         if customize.needs_details(self.key, self.item):
             try:
-                results = await cast("FoodieTui", self.app).providers[self.key].search_menu(
-                    self.ctx.restaurant_id, self.item.name, self.ctx.address_id
-                )
-                match = next((m for m in results if m.id == self.item.id), None)
+                provider = cast("FoodieTui", self.app).providers[self.key]
+                match = None
+                for query in customize.search_queries(self.item.name):
+                    results = await provider.search_menu(
+                        self.ctx.restaurant_id, query, self.ctx.address_id
+                    )
+                    match = next((m for m in results if m.id == self.item.id), None)
+                    if match is not None:
+                        break
+                    logger.info(
+                        "%s: query %r found %d item(s), none is %s (%s)",
+                        self.key, query, len(results), self.item.id, self.item.name,
+                    )
             except Exception as exc:
                 logger.warning("on_mount failed: %s", exc, exc_info=True)
                 note.update(f"Could not load options: {exc}")

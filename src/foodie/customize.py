@@ -6,6 +6,7 @@ into option groups and turns a user's choices back into a ``CartItem``.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -54,6 +55,26 @@ def needs_details(provider: str, item: MenuItem) -> bool:
     if provider != SWIGGY or item.variants or item.addons:
         return False
     return bool(item.raw.get("hasVariants") or item.raw.get("hasAddons"))
+
+
+def search_queries(name: str) -> list[str]:
+    """Queries to find an item by name, most specific first.
+
+    Swiggy's search can return nothing for a long exact name (e.g. one with
+    " - " separators), so fall back to its parts and leading words.
+    """
+    plain = re.sub(r"[^\w\s]", " ", name).split()
+    candidates = [
+        name,
+        *(part.strip() for part in name.split(" - ")),
+        " ".join(plain),
+        *(" ".join(plain[:n]) for n in (4, 3, 2)),
+    ]
+    queries: list[str] = []
+    for query in candidates:
+        if query and query not in queries:
+            queries.append(query)
+    return queries
 
 
 def _swiggy_variant_groups(item: MenuItem) -> list[OptionGroup]:
