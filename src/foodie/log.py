@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 import sys
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import httpx
+from platformdirs import user_log_dir
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +22,11 @@ _BEARER = re.compile(r"(Bearer\s+)\S+", re.IGNORECASE)
 
 
 def log_path() -> Path:
-    """File the logs are written to; the TUI owns the terminal so it can't use stderr."""
-    state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
-    return state_home / "foodie" / "foodie.log"
+    """File the logs are written to; the TUI owns the terminal so it can't use stderr.
+
+    Follows the platform's convention (XDG state dir, ~/Library/Logs, %LOCALAPPDATA%).
+    """
+    return Path(user_log_dir("foodie")) / "foodie.log"
 
 
 def redact(text: str) -> str:

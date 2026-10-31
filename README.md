@@ -55,7 +55,7 @@ subcommand, e.g. `foodie -v auth login`) for DEBUG.
 
 | Where | When |
 | --- | --- |
-| `~/.local/state/foodie/foodie.log` (or `$XDG_STATE_HOME/foodie/foodie.log`) | always |
+| `foodie.log` in the platform's log directory (below) | always |
 | stderr | commands other than the TUI, which owns the terminal |
 
 At DEBUG the log includes every HTTP request and response to the providers
@@ -64,5 +64,9 @@ timings, token refreshes, and keyring reads and writes. Access and refresh
 tokens, authorization codes, PKCE verifiers, client secrets and `Bearer`
 headers are masked as `***`, but the logs still contain your addresses, orders
 and menu data, so review them before sharing.
+
+The log directory comes from [platformdirs](https://pypi.org/project/platformdirs/):
+`~/.local/state/foodie/log` on Linux (honouring `$XDG_STATE_HOME`),
+`~/Library/Logs/foodie` on macOS and `%LOCALAPPDATA%\foodie\Logs` on Windows.
 
 Unexpected errors in the TUI are logged with a traceback at WARNING.
