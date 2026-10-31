@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
@@ -41,6 +42,9 @@ if TYPE_CHECKING:
 PROVIDERS = ("swiggy", "zomato")
 TITLES = {"swiggy": "Swiggy", "zomato": "Zomato"}
 PAYMENT_OPTIONS = [(label, value) for value, label in PAYMENT_LABELS.items()]
+
+
+logger = logging.getLogger(__name__)
 
 
 def _price(value: float | None) -> str:
@@ -123,6 +127,7 @@ class OptionsPanel(VerticalScroll):
                 )
                 match = next((m for m in results if m.id == self.item.id), None)
             except Exception as exc:
+                logger.warning("on_mount failed: %s", exc, exc_info=True)
                 note.update(f"Could not load options: {exc}")
                 return
             if match is None:
@@ -532,11 +537,13 @@ class CartScreen(Screen[None]):
                             result = reapplied
                         else:
                             self.coupons.pop(key, None)
-                    except Exception:
+                    except Exception as exc:
+                        logger.debug("%s: re-applying coupon %s failed: %s", key, code, exc)
                         self.coupons.pop(key, None)
                 self.priced[key] = result
                 totals.update(self._totals(result, self.coupons.get(key)))
             except Exception as exc:
+                logger.warning("price failed: %s", exc, exc_info=True)
                 totals.update(f"[b]{TITLES[key]} could not price the cart:[/b] {exc}")
 
         async with self.foodie.busy("Pricing your cart with the providers…"):
@@ -580,6 +587,7 @@ class CartScreen(Screen[None]):
             async with self.foodie.busy(f"Fetching {TITLES[key]} coupons…"):
                 available = await provider.get_cart_coupons(cart.restaurants[key].id, address_id, priced)
         except Exception as exc:
+            logger.warning("coupon failed: %s", exc, exc_info=True)
             available = []
             self.notify(f"Could not list coupons: {exc}", severity="warning")
         code = await self.app.push_screen_wait(
@@ -596,6 +604,7 @@ class CartScreen(Screen[None]):
             async with self.foodie.busy(f"Applying {code}…"):
                 result = await provider.apply_coupon(code, address_id)
         except Exception as exc:
+            logger.warning("coupon failed: %s", exc, exc_info=True)
             self.notify(f"{TITLES[key]} rejected {code}: {exc}", severity="error", timeout=10)
             return
         if result.discount <= 0:
@@ -630,6 +639,7 @@ class CartScreen(Screen[None]):
                 async with self.foodie.busy("Checking Swiggy's payment options…"):
                     methods = await provider.get_payment_options(address_id)
             except Exception as exc:
+                logger.warning("order failed: %s", exc, exc_info=True)
                 self.notify(f"Could not load payment options: {exc}", severity="error")
                 return
             offered = {
@@ -664,6 +674,7 @@ class CartScreen(Screen[None]):
             async with self.foodie.busy(f"Placing your {TITLES[key]} order…"):
                 placement = await place_order(key, provider, choice, address_id)
         except Exception as exc:
+            logger.warning("order failed: %s", exc, exc_info=True)
             self.notify(f"{TITLES[key]} couldn't place the order: {exc}", severity="error", timeout=10)
             self.query_one("#cart-status", Static).update("Order not placed.")
             return

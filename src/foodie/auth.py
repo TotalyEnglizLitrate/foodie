@@ -26,7 +26,9 @@ async def authenticate_interactive(
     Progress messages go to ``log`` (stdout by default) so a TUI can redirect them.
     """
     redirect_uri = f"http://localhost:{port}/callback"
+    logger.info("Starting OAuth login for %s on port %d", provider.display_name, port)
     auth_url, verifier = await provider.get_auth_url(redirect_uri)
+    logger.debug("Authorization url: %s", auth_url)
 
     loop = asyncio.get_running_loop()
     code_future: asyncio.Future[str] = loop.create_future()
@@ -42,6 +44,7 @@ async def authenticate_interactive(
                 path = parts[1]
                 parsed = urlparse(path)
                 query = parse_qs(parsed.query)
+                logger.debug("Callback request %s (params: %s)", parsed.path, sorted(query))
 
                 if "code" in query:
                     code = query["code"][0]
@@ -107,12 +110,14 @@ async def authenticate_interactive(
     try:
         code = await asyncio.wait_for(code_future, timeout=timeout)
     except TimeoutError:
+        logger.warning("OAuth login for %s timed out after %ss", provider.display_name, timeout)
         log("Authentication timed out. No authorization code received.")
         return False
     finally:
         server.close()
         await server.wait_closed()
 
+    logger.debug("Authorization code received for %s", provider.display_name)
     log("Authorization code received. Exchanging for tokens...")
     success = await provider.complete_auth(code, verifier, redirect_uri)
     if success:

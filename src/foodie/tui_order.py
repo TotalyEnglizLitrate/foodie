@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 from rich.text import Text
@@ -23,6 +24,9 @@ DEFAULT_POLL_SECONDS = 300.0
 MIN_POLL_INTERVAL = 3.0
 
 
+logger = logging.getLogger(__name__)
+
+
 def _price(value: float | None) -> str:
     return f"₹{value:,.0f}" if value is not None else "—"
 
@@ -31,6 +35,7 @@ async def place_order(
     key: str, provider: BaseProvider, choice: str, address_id: str
 ) -> OrderPlacement:
     """Place the order for the provider's current cart. ``choice`` is "upi" or "cash"."""
+    logger.info("Placing %s order via %s at address %s", choice, key, address_id)
     if key == "swiggy":
         if choice == "cash":
             return await provider.place_order("Cash", address_id)
@@ -231,6 +236,7 @@ class OrderStatusScreen(ModalScreen[bool]):
             else:
                 return False
         except Exception as exc:
+            logger.warning("check failed: %s", exc, exc_info=True)
             if not quiet:
                 self._state(f"Could not check payment: {exc}")
             return False
@@ -247,6 +253,7 @@ class OrderStatusScreen(ModalScreen[bool]):
         try:
             summary = await self.provider.confirm_order(self.placement.order_id)
         except Exception as exc:
+            logger.warning("_finalise failed: %s", exc, exc_info=True)
             self._state(f"Payment received but confirming failed: {exc}")
             self._finalising = False
             return False

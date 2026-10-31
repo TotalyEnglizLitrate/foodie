@@ -30,17 +30,22 @@ class SecretStore:
     async def set_credential(
         self, service: str, user: str, secret: str, label: str
     ) -> None:
+        logger.debug("keyring: storing %s/%s", self._service_name(service, label), user)
         await asyncio.to_thread(
             keyring.set_password, self._service_name(service, label), user, secret
         )
 
     async def get_credential(self, service: str, user: str, label: str) -> str | None:
-        return (
-            await asyncio.to_thread(
-                keyring.get_password, self._service_name(service, label), user
-            )
-            or "{}"
+        value = await asyncio.to_thread(
+            keyring.get_password, self._service_name(service, label), user
         )
+        logger.debug(
+            "keyring: read %s/%s (%s)",
+            self._service_name(service, label),
+            user,
+            "found" if value else "missing",
+        )
+        return value or "{}"
 
     async def delete_credential(self, service: str, user: str, label: str) -> bool:
         deleted = False
@@ -50,6 +55,7 @@ class SecretStore:
                 keyring.delete_password, self._service_name(service, label), user
             )
             deleted = True
+            logger.debug("keyring: deleted %s/%s", self._service_name(service, label), user)
         except keyring.errors.PasswordDeleteError as exc:
             logger.warning("Failed to delete credential from keyring: %s", exc)
 

@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import re
 import secrets
 import time
@@ -12,6 +13,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from foodie.log import http_event_hooks, truncate
 from foodie.models import (
     Address,
     Cart,
@@ -28,6 +30,8 @@ from foodie.models import (
 )
 from foodie.providers.base import BaseProvider
 from foodie.secret_store import SecretStore
+
+logger = logging.getLogger(__name__)
 
 
 class SwiggyProvider(BaseProvider):
@@ -48,7 +52,9 @@ class SwiggyProvider(BaseProvider):
         # retries only re-attempts failed connections (including TLS handshakes),
         # so the request never reached the server and replaying it is safe.
         self._http: httpx.AsyncClient = httpx.AsyncClient(
-            timeout=30.0, transport=httpx.AsyncHTTPTransport(retries=4)
+            timeout=30.0,
+            transport=httpx.AsyncHTTPTransport(retries=4),
+            event_hooks=http_event_hooks("swiggy"),
         )
         self._active_address_id: str | None = None
         self._address_coords: dict[str, tuple[float, float]] = {}
@@ -93,13 +99,16 @@ class SwiggyProvider(BaseProvider):
     async def is_authenticated(self) -> bool:
         tokens = await self._get_tokens()
         if not tokens or "access_token" not in tokens:
+            logger.debug("%s: no stored access token", self.display_name)
             return False
 
         # If expired or near expiration (within 60 seconds), attempt refresh
         expires_at = tokens.get("expires_at", 0)  # pyright: ignore[reportAny]
         if time.time() >= expires_at - 60:
+            logger.info("%s: access token expired or expiring, refreshing", self.display_name)
             return await self.refresh_auth()
 
+        logger.debug("%s: stored access token is valid", self.display_name)
         return True
 
     @override
@@ -125,6 +134,7 @@ class SwiggyProvider(BaseProvider):
             "state": state,
             "scope": "mcp:tools mcp:resources mcp:prompts",
         }
+        logger.debug("%s: built PKCE auth url for %s", self.display_name, redirect_uri)
         auth_url = f"{self.BASE_URL}/auth/authorize?{urlencode(params)}"
         return auth_url, code_verifier
 
@@ -176,6 +186,7 @@ class SwiggyProvider(BaseProvider):
             },
         )
         if resp.status_code != 200:
+            logger.warning("%s: token request failed (%s)", self.display_name, resp.status_code)
             return False
 
         data: dict[str, Any] = resp.json()  # pyright: ignore[reportAny, reportExplicitAny]
@@ -186,12 +197,14 @@ class SwiggyProvider(BaseProvider):
             "expires_at": time.time() + expires_in,
         }
         await self._save_tokens(tokens)
+        logger.info("%s: authorization complete, tokens stored", self.display_name)
         return True
 
     @override
     async def refresh_auth(self) -> bool:
         tokens = await self._get_tokens()
         if not tokens or "refresh_token" not in tokens:
+            logger.debug("%s: no refresh token available", self.display_name)
             return False
 
         resp = await self._http.post(
@@ -202,6 +215,7 @@ class SwiggyProvider(BaseProvider):
             },
         )
         if resp.status_code != 200:
+            logger.warning("%s: token request failed (%s)", self.display_name, resp.status_code)
             return False
 
         data: dict[str, Any] = resp.json()  # pyright: ignore[reportAny, reportExplicitAny]
@@ -211,10 +225,12 @@ class SwiggyProvider(BaseProvider):
             tokens["refresh_token"] = data.get("refresh_token")
         tokens["expires_at"] = time.time() + expires_in
         await self._save_tokens(tokens)
+        logger.info("%s: access token refreshed", self.display_name)
         return True
 
     @override
     async def logout(self) -> None:
+        logger.info("%s: deleting stored credentials", self.display_name)
         _ = await self.store.delete_credential(
             self.SERVICE_KEY, self.ACCOUNT_KEY, self.name
         )
@@ -230,6 +246,8 @@ class SwiggyProvider(BaseProvider):
             raise PermissionError("Not authenticated with Swiggy. Please login first.")
 
         access_token = tokens["access_token"]  # pyright: ignore[reportAny]
+        logger.debug("%s: tool call %s args=%s", self.display_name, tool_name, truncate(json.dumps(arguments, default=str)))
+        started = time.monotonic()
         payload = {
             "jsonrpc": "2.0",
             "id": time.time_ns() // 1000,
@@ -246,6 +264,7 @@ class SwiggyProvider(BaseProvider):
 
         resp = await self._http.post(url, json=payload, headers=headers)
         if resp.status_code == 401:
+            logger.info("%s: 401 from %s, attempting token refresh", self.display_name, tool_name)
             refreshed = await self.refresh_auth()
             if refreshed:
                 tokens = await self._get_tokens()
@@ -266,6 +285,7 @@ class SwiggyProvider(BaseProvider):
         else:
             res_json = resp.json()  # pyright: ignore[reportAny]
 
+        logger.debug("%s: tool call %s answered in %.0fms", self.display_name, tool_name, (time.monotonic() - started) * 1000)
         if not isinstance(res_json, dict):
             raise RuntimeError(
                 f"Swiggy returned a malformed response for {tool_name}: {res_json!r}"

@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-foodie = "foodie.tui:main"
+foodie = "foodie.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.9.18,<0.10.0"]

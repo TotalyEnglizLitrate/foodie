@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import webbrowser
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, cast
@@ -26,6 +27,9 @@ MIN_REFRESH_SECONDS = 10.0  # Swiggy asks clients not to poll faster
 
 # Order times carry no year, e.g. Swiggy "September 22, 7:56 PM" and Zomato "24 Oct, 7:06PM".
 TIME_FORMATS = ("%Y %B %d, %I:%M %p", "%Y %d %b, %I:%M%p", "%Y %d %b, %I:%M %p", "%Y %b %d, %I:%M %p")
+
+
+logger = logging.getLogger(__name__)
 
 
 def parse_order_time(text: str | None, now: datetime | None = None) -> datetime | None:
@@ -211,6 +215,7 @@ class TrackScreen(Screen[None]):
             self._show(None, f"No live tracking for this order ({exc}).")
             return None
         except Exception as exc:
+            logger.warning("_fetch failed: %s", exc, exc_info=True)
             self._show(None, f"Could not load tracking: {exc}")
             return None
         note = (

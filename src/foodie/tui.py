@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import logging
 import re
 from dataclasses import dataclass, field
 
@@ -21,6 +22,8 @@ from foodie.providers.zomato import ZomatoProvider
 from foodie.tui_busy import Busy
 from foodie.tui_cart import AddItemModal, CartScreen, CartState, ProviderContext
 from foodie.tui_track import OrdersScreen
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -105,15 +108,21 @@ class ProviderState:
 
 
 async def fetch_provider(provider: BaseProvider) -> ProviderState:
+    logger.debug("Fetching session and addresses for %s", provider.display_name)
     try:
         authed = await provider.is_authenticated()
     except Exception as exc:
+        logger.warning("fetch_provider failed: %s", exc, exc_info=True)
         return ProviderState(error=f"{provider.display_name}: {describe(exc)}")
     if not authed:
+        logger.info("%s: not authenticated", provider.display_name)
         return ProviderState()
     try:
-        return ProviderState(True, await provider.get_addresses())
+        addresses = await provider.get_addresses()
+        logger.info("%s: authenticated, %d saved address(es)", provider.display_name, len(addresses))
+        return ProviderState(True, addresses)
     except Exception as exc:
+        logger.warning("fetch_provider failed: %s", exc, exc_info=True)
         return ProviderState(True, error=f"{provider.display_name}: {describe(exc)}")
 
 
@@ -257,6 +266,7 @@ class RestaurantsScreen(Screen[None]):
         provider = self._provider(key)
         status = self.query_one("#status", Static)
         event.button.disabled = True
+        logger.info("Auth button pressed for %s", provider.display_name)
         try:
             if await provider.is_authenticated():
                 await provider.logout()
@@ -269,6 +279,7 @@ class RestaurantsScreen(Screen[None]):
                 error = await self.load_provider(key)
             status.update(error or f"{provider.display_name} ready.")
         except Exception as exc:
+            logger.warning("auth_pressed failed: %s", exc, exc_info=True)
             status.update(f"{provider.display_name} auth failed: {exc}")
         finally:
             event.button.disabled = False
@@ -301,6 +312,7 @@ class RestaurantsScreen(Screen[None]):
             return
         button = self.query_one("#search", Button)
         button.disabled = True
+        logger.info("Searching for %r (addresses %s)", query, addresses)
         status.update("Searching Swiggy and Zomato…")
         try:
             async with self.foodie.busy(f"Searching Swiggy and Zomato for “{query}”…"):
@@ -317,6 +329,9 @@ class RestaurantsScreen(Screen[None]):
             swiggy = results[0] if isinstance(results[0], list) else []
             zomato = results[1] if isinstance(results[1], list) else []
             self.pairs = pair_restaurants(swiggy, zomato)
+            logger.info("Search %r: %d Swiggy, %d Zomato, %d pairs", query, len(swiggy), len(zomato), len(self.pairs))
+            for result_error in errors:
+                logger.warning("Search %r: %s", query, result_error)
             table = self.query_one("#results", DataTable)
             table.clear()
             for pair in self.pairs:
@@ -334,6 +349,7 @@ class RestaurantsScreen(Screen[None]):
             status.update(summary)
             table.focus()
         except Exception as exc:
+            logger.warning("action_search failed: %s", exc, exc_info=True)
             status.update(f"Search failed: {exc}")
         finally:
             button.disabled = False
@@ -507,6 +523,7 @@ class FoodieTui(App[None]):
 
     async def _start(self) -> None:
         """Blank screen, then the loading popup, then the restaurants screen."""
+        logger.info("Starting TUI")
         await self.push_screen(SplashScreen())
         self.busy.begin(STARTUP_MESSAGE, delay=0)
         await asyncio.sleep(0.1)  # let the blank screen and popup paint first
