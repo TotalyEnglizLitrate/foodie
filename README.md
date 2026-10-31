@@ -5,7 +5,7 @@ pay with a UPI QR or cash on delivery, and track your orders.
 
 ## Setup
 
-Requires Python 3.14+ and [uv](https://docs.astral.sh/uv/). Credentials are kept
+Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Credentials are kept
 in your system keyring, so a keyring backend (e.g. the D-Bus secret service on
 Linux) must be available.
 
