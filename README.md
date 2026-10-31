@@ -9,12 +9,21 @@ Requires Python 3.14+ and [uv](https://docs.astral.sh/uv/). Credentials are kept
 in your system keyring, so a keyring backend (e.g. the D-Bus secret service on
 Linux) must be available.
 
+To run from a checkout:
+
 ```sh
 uv sync
 uv run foodie
 ```
 
-A Nix flake is also provided (`nix develop`).
+To install the `foodie` command, no Nix needed:
+
+```sh
+uv tool install .   # or: pipx install .  /  pip install .
+foodie
+```
+
+A Nix flake is also provided if you prefer it (`nix develop`).
 
 ## Usage
 
