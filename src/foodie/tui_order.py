@@ -15,7 +15,7 @@ from textual.widgets import Button, Label, Static
 
 from foodie.models import OrderPlacement, OrderStatus
 from foodie.providers.base import BaseProvider
-from foodie.qr import render_qr
+from foodie.qr import render_qr, upi_amount
 
 PAID = {"SUCCESS", "SUCCESSFUL", "PAID", "COMPLETED", "CHARGED", "CAPTURED"}
 # The one payment choice the cart screen offers, shared by both providers.
@@ -168,18 +168,35 @@ class OrderStatusScreen(ModalScreen[bool]):
     def _can_poll(self) -> bool:
         return self.key != "swiggy" or bool(self._poll_kwargs)
 
+    def _amount_mismatch(self, data: str | None) -> float | None:
+        """The UPI amount in ``data`` when it differs from the cart total."""
+        charged = upi_amount(data or "")
+        if charged is None or abs(charged - self.total) < 0.5:
+            return None
+        logger.warning(
+            "%s order %s: cart total %s differs from UPI amount %s",
+            self.key, self.placement.order_id, self.total, charged,
+        )
+        return charged
+
     def compose(self) -> ComposeResult:
         placement = self.placement
         with Vertical(id="order-box"):
             yield Label(f"[b]{self.provider.display_name} order {placement.order_id}[/b]")
             if placement.requires_payment:
                 data = placement.upi_qr_string or placement.payment_url
+                mismatch = self._amount_mismatch(data)
                 with VerticalScroll(id="qr-scroll"):
                     if data:
                         yield Static(Text(render_qr(data), style="black on white", no_wrap=True), id="qr")
                     else:
                         yield Static("The provider didn't return a payment QR.", id="qr")
                 info = f"Scan with any UPI app and pay [b]{_price(self.total)}[/b]."
+                if mismatch is not None:
+                    info = (
+                        f"[b]The QR asks for {_price(mismatch)}[/b], but the cart total was "
+                        f"{_price(self.total)}. Check the amount in your UPI app before paying."
+                    )
                 if placement.payment_url:
                     info += f"\nOr open: {placement.payment_url}"
             else:

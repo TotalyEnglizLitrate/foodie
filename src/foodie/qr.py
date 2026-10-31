@@ -2,7 +2,20 @@
 
 from __future__ import annotations
 
+from urllib.parse import parse_qs, urlparse
+
 import segno
+
+
+def upi_amount(data: str) -> float | None:
+    """The ``am`` (amount) of a ``upi://pay`` string, if it has one."""
+    parsed = urlparse(data)
+    if parsed.scheme != "upi":
+        return None
+    try:
+        return float(parse_qs(parsed.query).get("am", [""])[0])
+    except ValueError:
+        return None
 
 
 def render_qr(data: str, border: int = 2) -> str:

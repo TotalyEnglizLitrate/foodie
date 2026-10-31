@@ -59,7 +59,7 @@ subcommand, e.g. `foodie -v auth login`) for DEBUG.
 | stderr | commands other than the TUI, which owns the terminal |
 
 At DEBUG the log includes every HTTP request and response to the providers
-(bodies truncated to 2000 characters), tool calls with their arguments and
+(bodies truncated to 20,000 characters), tool calls with their arguments and
 timings, token refreshes, and keyring reads and writes. Access and refresh
 tokens, authorization codes, PKCE verifiers, client secrets and `Bearer`
 headers are masked as `***`, but the logs still contain your addresses, orders

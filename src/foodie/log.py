@@ -12,10 +12,10 @@ from platformdirs import user_log_dir
 logger = logging.getLogger(__name__)
 
 LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
-BODY_LIMIT = 2000
+BODY_LIMIT = 20000
 
 _SECRET_FIELD = re.compile(
-    r"""(?P<key>["']?(?:access_token|refresh_token|code_verifier|client_secret|code)["']?\s*[:=]\s*["']?)(?P<value>[^"'&,\s}]+)""",
+    r"""(?P<key>(?<![A-Za-z_])["']?(?:access_token|refresh_token|code_verifier|client_secret|code)["']?\s*[:=]\s*["']?)(?P<value>[^"'&,\s}]+)""",
     re.IGNORECASE,
 )
 _BEARER = re.compile(r"(Bearer\s+)\S+", re.IGNORECASE)

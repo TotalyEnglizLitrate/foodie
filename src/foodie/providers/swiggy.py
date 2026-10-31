@@ -29,6 +29,7 @@ from foodie.models import (
     Restaurant,
 )
 from foodie.providers.base import BaseProvider
+from foodie.qr import upi_amount
 from foodie.secret_store import SecretStore
 
 logger = logging.getLogger(__name__)
@@ -924,6 +925,16 @@ class SwiggyProvider(BaseProvider):
             res.get("upiQrString")
             or res.get("qrData")
             or (res.get("upiIntentUrl") if res.get("isQrFlow") else None)
+        )
+
+        logger.info(
+            "Swiggy order %s: status=%s totalAmount=%s upi_amount=%s qr=%s bridge=%s",
+            order_id,
+            status_str,
+            res.get("totalAmount"),
+            upi_amount(upi_qr or ""),
+            bool(upi_qr),
+            bool(res.get("bridgeUrl")),
         )
 
         # Cache order context for subsequent check_payment_status / confirm_order
