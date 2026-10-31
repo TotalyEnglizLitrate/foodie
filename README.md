@@ -16,14 +16,13 @@ uv sync
 uv run foodie
 ```
 
-To install the `foodie` command, no Nix needed:
-
+To install `foodie`
 ```sh
-uv tool install .   # or: pipx install .  /  pip install .
+uv tool install git+https://github.com/TotalyEnglizLitrate/foodie   # or: pipx install git+https://github.com/TotalyEnglizLitrate/foodie
 foodie
 ```
 
-A Nix flake is also provided if you prefer it (`nix develop`).
+A Nix flake is also provided if you prefer it (`nix develop/run github:TotalyEnglizLitrate/foodie`).
 
 ## Usage
 
