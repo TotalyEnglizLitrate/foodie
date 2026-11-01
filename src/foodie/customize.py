@@ -139,6 +139,40 @@ def _swiggy_addon_groups(item: MenuItem) -> list[OptionGroup]:
     return groups
 
 
+def _swiggy_for_variant(
+    item: MenuItem, groups: list[OptionGroup], chosen: dict[str, list[str]]
+) -> list[OptionGroup]:
+    """Keep only the add-on group that applies to the chosen variant.
+
+    Swiggy doesn't link add-on groups to variants. Items priced per portion
+    repeat a required group once per variant, named alike apart from trailing
+    punctuation ("Choose Accompaniment", "Choose Accompaniment.", ...), and
+    only the group at the variant's price rank is accepted; the others fail
+    with INVALID_ADDON.
+    """
+    variant_groups_ = _swiggy_variant_groups(item)
+    if len(variant_groups_) != 1:
+        return groups
+    variants = variant_groups_[0].options
+    families: dict[str, list[OptionGroup]] = {}
+    for group in groups:
+        families.setdefault(re.sub(r"\W+$", "", group.name).lower(), []).append(group)
+    picked = chosen.get(variant_groups_[0].key) or []
+    current = next(
+        (v for v in variants if v.id in picked),
+        next((v for v in variants if v.default), variants[0]),
+    )
+    rank = sorted(variants, key=lambda v: v.price or 0).index(current)
+    dropped = {
+        id(group)
+        for family in families.values()
+        if len(family) > 1 and len(family) == len(variants)
+        for i, group in enumerate(family)
+        if i != rank
+    }
+    return [g for g in groups if id(g) not in dropped]
+
+
 def _zomato_variants(item: MenuItem) -> list[dict[str, Any]]:
     return [
         v
@@ -234,7 +268,7 @@ def addon_groups(
     provider: str, item: MenuItem, chosen: dict[str, list[str]]
 ) -> list[OptionGroup]:
     if provider == SWIGGY:
-        return _swiggy_addon_groups(item)
+        return _swiggy_for_variant(item, _swiggy_addon_groups(item), chosen)
     return _zomato_addon_groups(item, resolve_zomato_variant(item, chosen))
 
 

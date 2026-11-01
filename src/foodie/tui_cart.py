@@ -570,7 +570,7 @@ class CartScreen(Screen[None]):
         lines = [f"{label:<10}{_price(value):>10}" for label, value in rows]
         lines.append(f"[b]{'Total':<10}{_price(cart.grand_total):>10}[/b]")
         # Zomato reports offers it applied itself in promo_code.
-        promo = coupon or cart.raw.get("promo_code")
+        promo = coupon or (cart.raw or {}).get("promo_code")
         if promo:
             lines.append(f"Coupon: {promo}")
         return "\n".join(lines)

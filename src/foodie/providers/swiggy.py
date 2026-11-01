@@ -741,6 +741,14 @@ class SwiggyProvider(BaseProvider):
         return coupons
 
     def _parse_cart(self, res: dict[str, Any]) -> Cart:
+        if isinstance(res, dict) and res.get("successful") is False:
+            codes = ", ".join(str(c) for c in res.get("errorCodes") or [])
+            message = str(
+                res.get("statusMessage") or res.get("titleMessage") or "request failed"
+            )
+            raise RuntimeError(
+                f"Swiggy rejected the cart: {message}" + (f" ({codes})" if codes else "")
+            )
         cart_data = res.get("data", res) if isinstance(res, dict) else {}
         restaurant_info = (
             cart_data.get("restaurant") if isinstance(cart_data, dict) else None
