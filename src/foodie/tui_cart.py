@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
+from rich.text import Text
 from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -34,7 +36,12 @@ from textual.widgets.selection_list import Selection
 from foodie import customize
 from foodie.customize import CartLine, OptionGroup
 from foodie.models import Cart, CartCoupon, MenuItem, Restaurant
-from foodie.tui_order import PAYMENT_LABELS, OrderConfirmModal, OrderStatusScreen, place_order
+from foodie.tui_order import (
+    PAYMENT_LABELS,
+    OrderConfirmModal,
+    OrderStatusScreen,
+    place_order,
+)
 
 if TYPE_CHECKING:
     from foodie.tui import FoodieTui
@@ -251,6 +258,12 @@ class OptionsPanel(VerticalScroll):
         return customize.build(self.key, self.item, quantity, self.chosen())
 
 
+def _description(item: MenuItem) -> Iterator[Static]:
+    """The item's description, if its provider gave one."""
+    if item.description.strip():
+        yield Static(Text(item.description.strip()), classes="item-description")
+
+
 class AddItemModal(ModalScreen["CartLine | None"]):
     DEFAULT_CSS = """
     AddItemModal { align: center middle; }
@@ -262,6 +275,7 @@ class AddItemModal(ModalScreen["CartLine | None"]):
     #qty { width: 12; }
     #modal-error { height: auto; color: $error; }
     #modal-buttons { height: 3; align-horizontal: right; }
+    .item-description { height: auto; color: $text-muted; margin-bottom: 1; }
     """
 
     BINDINGS = [("escape", "dismiss_modal", "Cancel")]
@@ -285,9 +299,12 @@ class AddItemModal(ModalScreen["CartLine | None"]):
                 with TabbedContent(id="provider-tabs"):
                     for key, panel in self.panels.items():
                         with TabPane(TITLES[key], id=f"tab-{key}"):
+                            yield from _description(self.contexts[key].item)
                             yield panel
             else:
-                yield from self.panels.values()
+                for key, panel in self.panels.items():
+                    yield from _description(self.contexts[key].item)
+                    yield panel
             yield Static("", id="modal-error")
             with Horizontal(id="modal-buttons"):
                 yield Button("Add to cart", id="add", variant="primary")
