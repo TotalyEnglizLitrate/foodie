@@ -89,20 +89,13 @@ class OrdersScreen(Screen[None]):
     async def action_reload(self) -> None:
         self.load()
 
-    async def _address_id(self, key: str) -> str | None:
-        known = self.foodie.address_ids.get(key)
-        if known:
-            return known
-        addresses = await self.foodie.providers[key].get_addresses()
-        return addresses[0].id if addresses else None
-
     @work(exclusive=True)
     async def load(self) -> None:
         status = self.query_one("#orders-status", Static)
         status.update("Loading orders…")
 
         async def fetch(key: str) -> list[tuple[str, OrderSummary]]:
-            address_id = await self._address_id(key)
+            address_id = await self.foodie.address_id(key)
             orders = await self.foodie.providers[key].get_orders(address_id)
             return [(key, order) for order in orders]
 

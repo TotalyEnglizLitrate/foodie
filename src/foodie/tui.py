@@ -18,7 +18,8 @@ from textual.widgets import Button, DataTable, Footer, Header, Input, Select, St
 
 from foodie.auth import authenticate_interactive
 from foodie.customize import CartLine
-from foodie.models import Address, MenuItem, Restaurant
+from foodie.models import Address, MenuItem, OrderStatus, Restaurant
+from foodie.notify import make_notifier, send_order_update
 from foodie.providers.base import BaseProvider
 from foodie.providers.swiggy import SwiggyProvider
 from foodie.providers.zomato import ZomatoProvider
@@ -33,7 +34,7 @@ from foodie.tui_grid import (
     photo_url,
     prune_photo_cache,
 )
-from foodie.tui_track import OrdersScreen
+from foodie.tui_track import TERMINAL, TITLES, OrdersScreen
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,8 @@ def _price(value: float | None) -> str:
 
 
 STARTUP_MESSAGE = "Starting Foodie — checking your Swiggy and Zomato sessions…"
+ORDER_POLL_SECONDS = 120.0  # Order-level polling when nothing is in progress.
+ACTIVE_ORDER_POLL_SECONDS = 45.0  # Matches Swiggy's own pollIntervalSec for live orders.
 
 
 def describe(exc: BaseException) -> str:
@@ -615,6 +618,36 @@ class FoodieTui(App[None]):
         self.busy = Busy(self)
         self.kitty_graphics = False  # set in main(), before Textual owns the terminal
         self.photos: dict[str, PILImage.Image | None] = {}  # shared by every menu visited
+        self.notifier = make_notifier()
+
+    async def address_id(self, key: str) -> str | None:
+        known = self.address_ids.get(key)
+        if known:
+            return known
+        addresses = await self.providers[key].get_addresses()
+        return addresses[0].id if addresses else None
+
+    async def _watch_orders(self) -> None:
+        """Notify when an order's status changes. A provider's first successful poll only records."""
+        statuses: dict[tuple[str, str], OrderStatus] = {}
+        seeded: set[str] = set()
+        while True:
+            for key, provider in self.providers.items():
+                try:
+                    orders = await provider.get_orders(await self.address_id(key))
+                except Exception as exc:
+                    logger.debug("Order poll skipped for %s: %s", key, exc)
+                    continue
+                for order in orders:
+                    seen = (key, order.order_id)
+                    if key in seeded and statuses.get(seen) != order.status:
+                        await send_order_update(
+                            self.notifier, TITLES[key], order.restaurant_name, order.status
+                        )
+                    statuses[seen] = order.status
+                seeded.add(key)
+            active = any(status not in TERMINAL for status in statuses.values())
+            await asyncio.sleep(ACTIVE_ORDER_POLL_SECONDS if active else ORDER_POLL_SECONDS)
 
     def action_orders(self) -> None:
         if not isinstance(self.screen, OrdersScreen):
@@ -631,6 +664,7 @@ class FoodieTui(App[None]):
     def on_mount(self) -> None:
         self.run_worker(self._start(), exclusive=True)
         self.run_worker(prune_photo_cache, thread=True)
+        self.run_worker(self._watch_orders())
 
     async def _start(self) -> None:
         """Blank screen, then the loading popup, then the restaurants screen."""

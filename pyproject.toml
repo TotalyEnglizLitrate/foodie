@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "desktop-notifier>=6.2.0",
     "fastapi>=0.159.1",
     "httpx>=0.28.1",
     "keyring>=25.7.0",
