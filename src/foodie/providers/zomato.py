@@ -13,6 +13,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from foodie import menu_cache
 from foodie.log import http_event_hooks, truncate
 from foodie.models import (
     Address,
@@ -695,9 +696,13 @@ class ZomatoProvider(BaseProvider):
         categories = self._categories(listing)
         if not categories:
             return []
-        responses = await self._fetch_menu_details(
-            res_id, categories, resolved_address_id
-        )
+        cache_key = f"zomato:{res_id}:{resolved_address_id}"
+        responses = menu_cache.load(cache_key, len(categories))
+        if responses is None:
+            responses = await self._fetch_menu_details(
+                res_id, categories, resolved_address_id
+            )
+            menu_cache.store(cache_key, len(categories), responses)
 
         groups: dict[str, dict[str, Any]] = {}
         details_by_variant_id: dict[str, dict[str, Any]] = {}

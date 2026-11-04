@@ -5,14 +5,17 @@ import base64
 import hashlib
 import json
 import logging
+import math
 import re
 import secrets
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any, cast, override
 from urllib.parse import urlencode
 
 import httpx
 
+from foodie import menu_cache
 from foodie.log import http_event_hooks, truncate
 from foodie.models import (
     Address,
@@ -524,25 +527,35 @@ class SwiggyProvider(BaseProvider):
         categories = res.get("categories", [])
         return len(categories) >= SwiggyProvider.MENU_PAGE_SIZE
 
-    @override
-    async def get_menu(
-        self, restaurant_id: str, address_id: str | None = None
-    ) -> list[MenuItem]:
-        resolved_address_id = self._address_id(address_id)
+    async def _menu_pages(
+        self, fetch_page: Callable[[int], Awaitable[Any]], first: Any
+    ) -> list[Any]:
+        """Fetch the pages after `first`, concurrently when the MCP reports the total.
+
+        `first` reports how many categories the menu has, which fixes the page count.
+        """
+        if not isinstance(first, dict) or not self._has_more_menu_categories(first):
+            return []
+        total = first.get("totalCategories")
+        if isinstance(total, int):
+            last = min(math.ceil(total / self.MENU_PAGE_SIZE), self.MAX_MENU_PAGES)
+            return list(await asyncio.gather(*(fetch_page(p) for p in range(2, last + 1))))
+        # No total reported, so page one at a time until the MCP says there are no more.
+        pages: list[Any] = []
+        for page in range(2, self.MAX_MENU_PAGES + 1):
+            res = await fetch_page(page)
+            pages.append(res)
+            if not isinstance(res, dict) or not self._has_more_menu_categories(res):
+                break
+        return pages
+
+    @staticmethod
+    def _merge_menu_pages(pages: list[Any]) -> list[dict[str, Any]]:
+        """Flatten menu pages into items, dropping the "Recommended" repeats."""
         items_raw: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
-        for page in range(1, self.MAX_MENU_PAGES + 1):
-            res = await self._call_tool(
-                "get_restaurant_menu",
-                {
-                    "restaurantId": restaurant_id,
-                    "addressId": resolved_address_id,
-                    "page": page,
-                    "pageSize": self.MENU_PAGE_SIZE,
-                },
-            )
-            page_items = self._menu_items(res) if isinstance(res, dict) else res
-            new_items = 0
+        for res in pages:
+            page_items = SwiggyProvider._menu_items(res) if isinstance(res, dict) else res
             for item in page_items:
                 item_id = str(
                     item.get("id")
@@ -557,13 +570,36 @@ class SwiggyProvider(BaseProvider):
                 if item_id:
                     seen_ids.add(item_id)
                 items_raw.append(item)
-                new_items += 1
+        return items_raw
 
-            if not isinstance(res, dict) or not self._has_more_menu_categories(res):
-                break
-            # Protect against an endpoint that ignores page and repeats page 1.
-            if not page_items or not new_items:
-                break
+    @override
+    async def get_menu(
+        self, restaurant_id: str, address_id: str | None = None
+    ) -> list[MenuItem]:
+        resolved_address_id = self._address_id(address_id)
+
+        async def fetch_page(page: int) -> Any:
+            return await self._call_tool(
+                "get_restaurant_menu",
+                {
+                    "restaurantId": restaurant_id,
+                    "addressId": resolved_address_id,
+                    "page": page,
+                    "pageSize": self.MENU_PAGE_SIZE,
+                },
+            )
+
+        first = await fetch_page(1)
+        total = first.get("totalCategories") if isinstance(first, dict) else None
+        cache_key = f"swiggy:{restaurant_id}:{resolved_address_id}"
+        cached = menu_cache.load(cache_key, total) if isinstance(total, int) else None
+        if cached is not None:
+            items_raw = cached
+        else:
+            pages = [first, *await self._menu_pages(fetch_page, first)]
+            items_raw = self._merge_menu_pages(pages)
+            if isinstance(total, int):
+                menu_cache.store(cache_key, total, items_raw)
 
         items: list[MenuItem] = []
         for item in items_raw:
