@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import io
 from urllib.parse import parse_qs, urlparse
 
 import segno
+from PIL import Image as PILImage
 
 
 def upi_amount(data: str) -> float | None:
@@ -16,6 +18,14 @@ def upi_amount(data: str) -> float | None:
         return float(parse_qs(parsed.query).get("am", [""])[0])
     except ValueError:
         return None
+
+
+def render_qr_image(data: str, border: int = 2) -> PILImage.Image:
+    """Return ``data`` as a square black-on-white QR code image."""
+    buffer = io.BytesIO()
+    segno.make(data, error="m").save(buffer, kind="png", scale=4, border=border)
+    buffer.seek(0)
+    return PILImage.open(buffer).convert("RGB")
 
 
 def render_qr(data: str, border: int = 2) -> str:

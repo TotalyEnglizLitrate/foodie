@@ -11,17 +11,20 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import Button, Label, Static
+from textual_image.widget import TGPImage
 
 from foodie.models import OrderPlacement, OrderStatus
 from foodie.providers.base import BaseProvider
-from foodie.qr import render_qr, upi_amount
+from foodie.qr import render_qr, render_qr_image, upi_amount
 
 PAID = {"SUCCESS", "SUCCESSFUL", "PAID", "COMPLETED", "CHARGED", "CAPTURED"}
 # The one payment choice the cart screen offers, shared by both providers.
 PAYMENT_LABELS = {"upi": "UPI QR (scan to pay)", "cash": "Cash on delivery"}
 DEFAULT_POLL_SECONDS = 300.0
 MIN_POLL_INTERVAL = 3.0
+QR_IMAGE_ROWS = 24
 
 
 logger = logging.getLogger(__name__)
@@ -188,7 +191,7 @@ class OrderStatusScreen(ModalScreen[bool]):
                 mismatch = self._amount_mismatch(data)
                 with VerticalScroll(id="qr-scroll"):
                     if data:
-                        yield Static(Text(render_qr(data), style="black on white", no_wrap=True), id="qr")
+                        yield self._qr(data)
                     else:
                         yield Static("The provider didn't return a payment QR.", id="qr")
                 info = f"Scan with any UPI app and pay [b]{_price(self.total)}[/b]."
@@ -207,6 +210,15 @@ class OrderStatusScreen(ModalScreen[bool]):
                 if placement.requires_payment:
                     yield Button("Check now", id="check", disabled=not self._can_poll)
                 yield Button("Close", id="close", variant="primary")
+
+    def _qr(self, data: str) -> Widget:
+        if getattr(self.app, "kitty_graphics", False):
+            # Keep the code square: the height sets the rows, and the width follows the aspect ratio.
+            image = TGPImage(render_qr_image(data), id="qr")
+            image.styles.width = "auto"
+            image.styles.height = QR_IMAGE_ROWS
+            return image
+        return Static(Text(render_qr(data), style="black on white", no_wrap=True), id="qr")
 
     def on_mount(self) -> None:
         if not self.placement.requires_payment:
