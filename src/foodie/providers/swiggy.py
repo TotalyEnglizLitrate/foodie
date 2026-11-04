@@ -1129,7 +1129,7 @@ class SwiggyProvider(BaseProvider):
                 status = OrderStatus.CANCELLED
             elif "OUT" in raw_status:
                 status = OrderStatus.OUT_FOR_DELIVERY
-            elif "PREPAR" in raw_status:
+            elif "PREPAR" in raw_status or "PROCESS" in raw_status:
                 status = OrderStatus.PREPARING
             elif "CONFIRM" in raw_status:
                 status = OrderStatus.CONFIRMED
@@ -1206,12 +1206,15 @@ class SwiggyProvider(BaseProvider):
             status = OrderStatus.DELIVERED
         elif cancelled or "CANCEL" in status_str:
             status = OrderStatus.CANCELLED
-        elif "PREPAR" in status_str:
+        elif "PREPAR" in status_str or "PROCESS" in status_str:
             status = OrderStatus.PREPARING
         elif "CONFIRM" in status_str:
             status = OrderStatus.CONFIRMED
-        else:
+        elif "OUT" in status_str:
             status = OrderStatus.OUT_FOR_DELIVERY
+        else:
+            # Unknown text is not evidence the rider has left.
+            status = OrderStatus.PLACED
 
         eta_mins: int | None = None
         if status not in (OrderStatus.DELIVERED, OrderStatus.CANCELLED):
