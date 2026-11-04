@@ -18,7 +18,7 @@ uv run foodie
 
 To install `foodie`
 ```sh
-uv tool install https://github.com/TotalyEnglizLitrate/foodie/releases/download/v0.1.0/foodie-0.1.0-py3-none-any.whl  # or: pipx install ...
+uv tool install https://github.com/TotalyEnglizLitrate/foodie/releases/download/v0.1.1/foodie-0.1.0-py3-none-any.whl  # or: pipx install ...
 foodie
 ```
 
