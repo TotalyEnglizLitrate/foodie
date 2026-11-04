@@ -9,16 +9,15 @@ Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Credentials are kept
 in your system keyring, so a keyring backend (e.g. the D-Bus secret service on
 Linux) must be available.
 
-To run from a checkout:
+To run foodie without installing it:
 
 ```sh
-uv sync
-uv run foodie
+uvx https://github.com/TotalyEnglizLitrate/foodie/releases/download/v0.1.2/foodie-0.1.0-py3-none-any.whl
 ```
 
 To install `foodie`
 ```sh
-uv tool install https://github.com/TotalyEnglizLitrate/foodie/releases/download/v0.1.1/foodie-0.1.0-py3-none-any.whl  # or: pipx install ...
+uv tool install https://github.com/TotalyEnglizLitrate/foodie/releases/download/v0.1.2/foodie-0.1.0-py3-none-any.whl  # or: pipx install ...
 foodie
 ```
 
