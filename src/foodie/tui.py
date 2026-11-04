@@ -4,11 +4,14 @@ import asyncio
 import difflib
 import logging
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
+from PIL import Image as PILImage
 from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.screen import Screen
 from textual.widgets import Button, DataTable, Footer, Header, Input, Select, Static
@@ -21,6 +24,15 @@ from foodie.providers.swiggy import SwiggyProvider
 from foodie.providers.zomato import ZomatoProvider
 from foodie.tui_busy import Busy
 from foodie.tui_cart import AddItemModal, CartScreen, CartState, ProviderContext
+from foodie.tui_grid import (
+    MenuCard,
+    MenuGrid,
+    fetch_photos,
+    kitty_graphics_supported,
+    photo_rows,
+    photo_url,
+    prune_photo_cache,
+)
 from foodie.tui_track import OrdersScreen
 
 logger = logging.getLogger(__name__)
@@ -362,14 +374,26 @@ class RestaurantsScreen(Screen[None]):
         self.app.push_screen(MenuScreen(self.pairs[event.cursor_row], *addresses))
 
 
+def _prices(row: tuple[MenuItem | None, MenuItem | None]) -> str:
+    return " · ".join(
+        f"{provider} {_price(item.price)}"
+        for provider, item in zip(("Swiggy", "Zomato"), row)
+        if item is not None
+    )
+
+
 class MenuScreen(Screen[None]):
     CSS = """
     #menu-query { height: 3; }
     #menu-status { height: 2; padding: 0 1; }
     #menu-results { height: 1fr; }
+    #menu-grid { height: 1fr; display: none; }
     """
 
-    BINDINGS = [("escape", "app.pop_screen", "Back")]
+    BINDINGS = [
+        ("escape", "app.pop_screen", "Back"),
+        Binding("g", "toggle_grid", "Grid view"),
+    ]
 
     def __init__(self, pair: RestaurantPair, swiggy_address: str, zomato_address: str) -> None:
         super().__init__()
@@ -378,6 +402,7 @@ class MenuScreen(Screen[None]):
         self.zomato_address = zomato_address
         self.menu_items: list[tuple[str, object | None, object | None, float]] = []
         self._rows: dict[str, tuple[MenuItem | None, MenuItem | None]] = {}
+        self.grid_view = False
 
     @property
     def foodie(self) -> "FoodieTui":
@@ -391,7 +416,13 @@ class MenuScreen(Screen[None]):
         table.cursor_type = "row"
         table.add_columns("Swiggy item", "Swiggy price", "Zomato item", "Zomato price", "Match")
         yield table
+        yield MenuGrid(id="menu-grid")
         yield Footer()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "toggle_grid":
+            return self.foodie.kitty_graphics
+        return super().check_action(action, parameters)
 
     async def on_mount(self) -> None:
         pair = self.pair
@@ -417,26 +448,31 @@ class MenuScreen(Screen[None]):
             if isinstance(r, Exception)
         ]
         self.menu_items = pair_menu_items(swiggy_menu, zomato_menu)
-        self.render_menu()
+        await self.render_menu()
+        self._prefetch_photos()
         summary = f"{len(swiggy_menu)} Swiggy items · {len(zomato_menu)} Zomato items"
         if errors:
             summary += " | " + " | ".join(errors)
         self.query_one("#menu-status", Static).update(summary)
 
     @on(Input.Changed, "#menu-query")
-    def menu_filter_changed(self) -> None:
-        self.render_menu()
+    async def menu_filter_changed(self) -> None:
+        await self.render_menu()
 
-    def render_menu(self) -> None:
+    def _visible_rows(self, query: str) -> Iterator[tuple[int, tuple[str, object | None, object | None, float]]]:
+        for n, row in enumerate(self.menu_items):
+            category, swiggy_item, zomato_item, _ = row
+            names = " ".join(item.name for item in (swiggy_item, zomato_item) if item)
+            if not query or query in _normalise(names + " " + category):
+                yield n, row
+
+    async def render_menu(self) -> None:
         query = _normalise(self.query_one("#menu-query", Input).value)
         table = self.query_one("#menu-results", DataTable)
         table.clear()
         self._rows.clear()
         current: str | None = None
-        for n, (category, swiggy_item, zomato_item, score) in enumerate(self.menu_items):
-            names = " ".join(item.name for item in (swiggy_item, zomato_item) if item)
-            if query and query not in _normalise(names + " " + category):
-                continue
+        for n, (category, swiggy_item, zomato_item, score) in self._visible_rows(query):
             if category != current:
                 current = category
                 table.add_row(Text(category or "Uncategorised", style="bold"), "", "", "", "", key=f"h{n}")
@@ -449,12 +485,84 @@ class MenuScreen(Screen[None]):
                 f"{score:.0%}" if swiggy_item and zomato_item else "Unmatched",
                 key=f"i{n}",
             )
+        if self.grid_view:
+            await self._render_grid(query)
+
+    def _menu_photo_urls(self) -> set[str]:
+        return {
+            url for _, swiggy_item, zomato_item, _ in self.menu_items
+            if (url := photo_url((swiggy_item, zomato_item))) is not None
+        }
+
+    def _photo_rows(self) -> int:
+        """Photo height for this menu's cards, sized to the photos already downloaded."""
+        photos = self.foodie.photos
+        return photo_rows(
+            image.width / image.height
+            for url in self._menu_photo_urls()
+            if (image := photos.get(url)) is not None
+        )
+
+    async def _render_grid(self, query: str) -> None:
+        cards: list[MenuCard] = []
+        rows = self._photo_rows()
+        for _, (_, swiggy_item, zomato_item, _) in self._visible_rows(query):
+            row = (swiggy_item, zomato_item)
+            card = MenuCard(row, (swiggy_item or zomato_item).name, _prices(row), rows)
+            if card.photo_url in self.foodie.photos:
+                card.set_photo(self.foodie.photos[card.photo_url])
+            cards.append(card)
+        await self.query_one("#menu-grid", MenuGrid).set_cards(cards)
+
+    def _prefetch_photos(self) -> None:
+        """Download this menu's photos in the background, so the grid opens without waiting."""
+        if self.foodie.kitty_graphics:
+            # An app-level worker outlives this screen, so a menu left mid-download still caches.
+            self.foodie.run_worker(self._load_photos(), group="photos")
+
+    async def _load_photos(self) -> None:
+        photos = self.foodie.photos
+        missing = self._menu_photo_urls() - photos.keys()
+        if not missing:
+            return
+        def arrived(url: str, photo: PILImage.Image | None) -> None:
+            photos[url] = photo
+            if self.is_attached and self.grid_view:
+                for card in self.query_one("#menu-grid", MenuGrid).cards:
+                    if card.photo_url == url:
+                        card.set_photo(photo)
+
+        await fetch_photos(missing, on_photo=arrived)
+        if self.is_attached and self.grid_view:
+            # Resize once for the whole batch, so cards don't jump as each photo lands.
+            rows = self._photo_rows()
+            for card in self.query_one("#menu-grid", MenuGrid).cards:
+                card.set_photo_rows(rows)
+
+    async def action_toggle_grid(self) -> None:
+        self.grid_view = not self.grid_view
+        table = self.query_one("#menu-results", DataTable)
+        grid = self.query_one("#menu-grid", MenuGrid)
+        table.display = not self.grid_view
+        grid.display = self.grid_view
+        if self.grid_view:
+            await self.render_menu()
+            grid.focus()
+        else:
+            table.focus()
+
+    @on(MenuGrid.Selected)
+    def grid_selected(self, event: MenuGrid.Selected) -> None:
+        self._add(event.row)
 
     @on(DataTable.RowSelected, "#menu-results")
     def add_selected(self, event: DataTable.RowSelected) -> None:
         items = self._rows.get(event.row_key.value or "")
         if items is None:
             return
+        self._add(items)
+
+    def _add(self, items: tuple[MenuItem | None, MenuItem | None]) -> None:
         pair = self.pair
         contexts: dict[str, ProviderContext] = {}
         addresses = {"swiggy": self.swiggy_address, "zomato": self.zomato_address}
@@ -505,6 +613,8 @@ class FoodieTui(App[None]):
         self.address_labels: dict[str, str] = {}
         self.address_ids: dict[str, str] = {}
         self.busy = Busy(self)
+        self.kitty_graphics = False  # set in main(), before Textual owns the terminal
+        self.photos: dict[str, PILImage.Image | None] = {}  # shared by every menu visited
 
     def action_orders(self) -> None:
         if not isinstance(self.screen, OrdersScreen):
@@ -520,6 +630,7 @@ class FoodieTui(App[None]):
 
     def on_mount(self) -> None:
         self.run_worker(self._start(), exclusive=True)
+        self.run_worker(prune_photo_cache, thread=True)
 
     async def _start(self) -> None:
         """Blank screen, then the loading popup, then the restaurants screen."""
@@ -542,7 +653,9 @@ class FoodieTui(App[None]):
 
 
 def main() -> None:
-    FoodieTui().run()
+    app = FoodieTui()
+    app.kitty_graphics = kitty_graphics_supported()
+    app.run()
 
 
 if __name__ == "__main__":
