@@ -1,14 +1,36 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import webbrowser
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
 
 from foodie.providers.base import BaseProvider
 
 logger = logging.getLogger(__name__)
+
+
+PORT_ATTEMPTS = 10  # Consecutive ports tried before giving up on the callback server.
+
+
+async def _bind_callback_server(
+    handler: Callable[[asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]],
+    port: int,
+) -> tuple[int, asyncio.Server]:
+    """Listen on the first free localhost port from ``port`` upwards."""
+    for candidate in range(port, port + PORT_ATTEMPTS):
+        try:
+            return candidate, await asyncio.start_server(handler, "127.0.0.1", candidate)
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE:
+                raise
+            logger.info("Port %d is in use, trying the next one", candidate)
+    raise OSError(
+        errno.EADDRINUSE,
+        f"no free port for the login callback between {port} and {port + PORT_ATTEMPTS - 1}",
+    )
 
 
 async def authenticate_interactive(
@@ -25,11 +47,7 @@ async def authenticate_interactive(
 
     Progress messages go to ``log`` (stdout by default) so a TUI can redirect them.
     """
-    redirect_uri = f"http://localhost:{port}/callback"
     logger.info("Starting OAuth login for %s on port %d", provider.display_name, port)
-    auth_url, verifier = await provider.get_auth_url(redirect_uri)
-    logger.debug("Authorization url: %s", auth_url)
-
     loop = asyncio.get_running_loop()
     code_future: asyncio.Future[str] = loop.create_future()
 
@@ -99,8 +117,15 @@ async def authenticate_interactive(
             except Exception:
                 pass
 
-    server = await asyncio.start_server(handle_client, "127.0.0.1", port)
+    # Bind before building the redirect URI: the URI depends on the port actually bound.
+    bound_port, server = await _bind_callback_server(handle_client, port)
+    if bound_port != port:
+        log(f"Port {port} is in use; using port {bound_port} for the login callback.")
+    redirect_uri = f"http://localhost:{bound_port}/callback"
     logger.info("Local auth callback server listening on %s", redirect_uri)
+
+    auth_url, verifier = await provider.get_auth_url(redirect_uri)
+    logger.debug("Authorization url: %s", auth_url)
 
     log(f"Authenticating with {provider.display_name}. Opening browser; if it does not open, visit: {auth_url}")
     log(f"Waiting for authentication (timeout: {int(timeout)}s)...")
