@@ -12,12 +12,12 @@ Linux) must be available.
 To run foodie without installing it:
 
 ```sh
-uvx https://github.com/TotalyEnglizLitrate/foodie/releases/download/v0.1.2/foodie-0.1.2-py3-none-any.whl
+uvx https://github.com/TotalyEnglizLitrate/foodie/releases/download/v0.1.3/foodie-0.1.3-py3-none-any.whl
 ```
 
 To install `foodie`
 ```sh
-uv tool install https://github.com/TotalyEnglizLitrate/foodie/releases/download/v0.1.2/foodie-0.1.2-py3-none-any.whl  # or: pipx install ...
+uv tool install https://github.com/TotalyEnglizLitrate/foodie/releases/download/v0.1.3/foodie-0.1.3-py3-none-any.whl  # or: pipx install ...
 foodie
 ```
 
