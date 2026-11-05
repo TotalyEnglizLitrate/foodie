@@ -189,8 +189,9 @@ class RestaurantsScreen(Screen[None]):
     #search-row { height: 3; }
     #query { width: 1fr; }
     #search { width: 16; }
-    #auth-row { height: 3; }
+    #auth-row { height: 3; padding: 0 4; }
     #auth-row Button { width: 1fr; }
+    #auth-swiggy { margin: 0 4 0 0; }
     #addresses { height: 3; }
     #swiggy-address, #zomato-address { width: 1fr; }
     #status { height: 2; padding: 0 1; }
