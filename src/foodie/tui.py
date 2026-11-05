@@ -136,6 +136,10 @@ async def fetch_provider(provider: BaseProvider) -> ProviderState:
         addresses = await provider.get_addresses()
         logger.info("%s: authenticated, %d saved address(es)", provider.display_name, len(addresses))
         return ProviderState(True, addresses)
+    except PermissionError as exc:
+        # The session lapsed between the check and the call, so it is not logged in any more.
+        logger.info("%s: session expired while loading addresses", provider.display_name)
+        return ProviderState(error=f"{provider.display_name}: {describe(exc)}")
     except Exception as exc:
         logger.warning("fetch_provider failed: %s", exc, exc_info=True)
         return ProviderState(True, error=f"{provider.display_name}: {describe(exc)}")
@@ -253,14 +257,28 @@ class RestaurantsScreen(Screen[None]):
         """Refresh a provider's auth button and address list; returns an error message."""
         return self.apply_provider(key, await fetch_provider(self._provider(key)))
 
+    def style_auth_button(self, key: str, authed: bool) -> None:
+        """Label a provider's auth button for the session state: log out when authed, else log in."""
+        provider = self._provider(key)
+        button = self.query_one(f"#auth-{key}", Button)
+        button.label = f"{provider.display_name}: log out" if authed else f"{provider.display_name}: log in"
+        button.variant = "success" if authed else "warning"
+        button.disabled = False
+
+    async def sync_auth_button(self, key: str) -> None:
+        """Re-check a provider's session after a call found it expired, so the button offers log in."""
+        try:
+            authed = await self._provider(key).is_authenticated()
+        except Exception as exc:
+            logger.warning("sync_auth_button failed: %s", exc, exc_info=True)
+            authed = False
+        self.style_auth_button(key, authed)
+
     def apply_provider(self, key: str, state: ProviderState) -> str | None:
         """Show a provider's state in the UI; returns an error message, if any."""
         provider = self._provider(key)
-        button = self.query_one(f"#auth-{key}", Button)
+        self.style_auth_button(key, state.authed)
         select = self.query_one(f"#{key}-address", Select)
-        button.label = f"{provider.display_name}: log out" if state.authed else f"{provider.display_name}: log in"
-        button.variant = "success" if state.authed else "warning"
-        button.disabled = False
         if not state.authed:
             select.set_options([])
             return state.error or f"{provider.display_name} is not authenticated — press its log in button"
@@ -341,6 +359,9 @@ class RestaurantsScreen(Screen[None]):
                 for name, result in zip(("Swiggy", "Zomato"), results)
                 if isinstance(result, Exception)
             ]
+            for key, result in zip(("swiggy", "zomato"), results):
+                if isinstance(result, PermissionError):
+                    await self.sync_auth_button(key)
             swiggy = results[0] if isinstance(results[0], list) else []
             zomato = results[1] if isinstance(results[1], list) else []
             self.pairs = pair_restaurants(swiggy, zomato)
@@ -443,6 +464,10 @@ class MenuScreen(Screen[None]):
                 fetch(self.foodie.zomato, pair.zomato, self.zomato_address),
                 return_exceptions=True,
             )
+        restaurants = next((s for s in self.app.screen_stack if isinstance(s, RestaurantsScreen)), None)
+        for key, result in zip(("swiggy", "zomato"), results):
+            if isinstance(result, PermissionError) and restaurants is not None:
+                await restaurants.sync_auth_button(key)
         swiggy_menu = results[0] if isinstance(results[0], list) else []
         zomato_menu = results[1] if isinstance(results[1], list) else []
         errors = [
