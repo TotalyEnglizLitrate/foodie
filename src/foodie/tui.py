@@ -65,25 +65,50 @@ def _location(restaurant: Restaurant) -> str:
     return _normalise(" ".join(parts))
 
 
+# Both providers measure distance from the same address, so one branch reports
+# nearly the same distance on both sides.
+DISTANCE_TOLERANCE_KM = 1.0
+
+
+def _same_branch(left: Restaurant, right: Restaurant, loc_score: float) -> bool:
+    """Whether the listings agree on where they are, and nothing contradicts it.
+
+    Branches of one chain share a name, so the name alone is not evidence.
+    Distance from the user's address is the signal both providers share; the
+    area text is used too when both sides have it.
+    """
+    left_loc, right_loc = _location(left), _location(right)
+    areas_known = bool(left_loc and right_loc)
+    distances_known = left.distance_km is not None and right.distance_km is not None
+    distances_close = distances_known and abs(left.distance_km - right.distance_km) <= DISTANCE_TOLERANCE_KM
+    if distances_known and not distances_close:
+        return False
+    if areas_known and loc_score < 0.5:
+        return False
+    return distances_close or (areas_known and loc_score >= 0.5)
+
+
 def pair_restaurants(
     swiggy: list[Restaurant], zomato: list[Restaurant]
 ) -> list[RestaurantPair]:
-    """Pair likely same restaurants, preferring name and then location similarity."""
+    """Pair likely same restaurants: the name must match and the branch must agree."""
     candidates: list[tuple[float, int, int]] = []
     for i, left in enumerate(swiggy):
         left_name = _normalise(left.name)
         for j, right in enumerate(zomato):
             right_name = _normalise(right.name)
             name_score = difflib.SequenceMatcher(None, left_name, right_name).ratio()
+            if name_score < 0.62:
+                continue
             left_loc, right_loc = _location(left), _location(right)
             loc_score = (
                 difflib.SequenceMatcher(None, left_loc, right_loc).ratio()
                 if left_loc and right_loc else 0.0
             )
-            # Location can strengthen a name match, but should not pair unrelated names.
+            if not _same_branch(left, right, loc_score):
+                continue
             score = name_score * 0.85 + loc_score * 0.15
-            if name_score >= 0.62 and (not left_loc or not right_loc or score >= 0.62):
-                candidates.append((score, i, j))
+            candidates.append((score, i, j))
 
     used_s: set[int] = set()
     used_z: set[int] = set()
