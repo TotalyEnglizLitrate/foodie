@@ -7,6 +7,7 @@ into option groups and turns a user's choices back into a ``CartItem``.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -154,14 +155,61 @@ def _swiggy_for_variant(
     if len(variant_groups_) != 1:
         return groups
     variants = variant_groups_[0].options
-    families: dict[str, list[OptionGroup]] = {}
-    for group in groups:
-        families.setdefault(re.sub(r"\W+$", "", group.name).lower(), []).append(group)
     picked = chosen.get(variant_groups_[0].key) or []
     current = next(
         (v for v in variants if v.id in picked),
         next((v for v in variants if v.default), variants[0]),
     )
+
+    # A group whose name carries a variant's key only applies to that variant.
+    keys = {v.id: _variant_key(v.name) for v in variants}
+    counts = {k: list(keys.values()).count(k) for k in set(keys.values())}
+
+    def key_owner(group: OptionGroup) -> str | None:
+        text = group.name.lower()
+        for vid, key in keys.items():
+            if key and counts[key] == 1 and re.search(
+                rf"(?<![a-z0-9]){re.escape(key)}(?![a-z0-9])", text
+            ):
+                return vid
+        return None
+
+    owners = {id(g): key_owner(g) for g in groups}
+
+    # The default size's groups are often named without its size, so give an
+    # unowned group to the size that its keyed siblings (same name once keys are
+    # removed) don't already cover.
+    key_values = list(keys.values())
+    covered: dict[str, set[str]] = {}
+    for g in groups:
+        if owners[id(g)] is not None:
+            base = _name_base(g.name, key_values)
+            covered.setdefault(base, set()).add(owners[id(g)])
+    sizes = [vid for vid, key in keys.items() if re.fullmatch(r"\d+cm", key)]
+    default_size = sizes[0] if sizes else None
+    for g in groups:
+        if owners[id(g)] is None:
+            taken = covered.get(_name_base(g.name, key_values))
+            free = [vid for vid in sizes if vid not in (taken or set())]
+            if taken and len(free) == 1:
+                owners[id(g)] = free[0]
+                default_size = free[0]
+
+    # A variant without a size (a combo) is the default size plus extra items,
+    # so it takes the default size's groups as well as its own.
+    sized = current.id in sizes
+    groups = [
+        g
+        for g in groups
+        if owners[id(g)] in (None, current.id)
+        or (not sized and owners[id(g)] == default_size)
+    ]
+
+    # Groups repeated once per variant under alike names keep only the one at
+    # the chosen variant's price rank.
+    families: dict[str, list[OptionGroup]] = {}
+    for group in groups:
+        families.setdefault(re.sub(r"\W+$", "", group.name).lower(), []).append(group)
     rank = sorted(variants, key=lambda v: v.price or 0).index(current)
     dropped = {
         id(group)
@@ -171,6 +219,28 @@ def _swiggy_for_variant(
         if i != rank
     }
     return [g for g in groups if id(g) not in dropped]
+
+
+def _name_base(name: str, keys: Iterable[str]) -> str:
+    """Lowercase words of a group name with any variant keys removed."""
+    text = name.lower()
+    for key in keys:
+        if key:
+            text = re.sub(rf"(?<![a-z0-9]){re.escape(key)}(?![a-z0-9])", " ", text)
+    return " ".join(re.findall(r"[a-z0-9]+", text))
+
+
+def _variant_key(name: str) -> str:
+    """Return the token a variant's own add-on group names usually include.
+
+    Use the size token when the name has one, otherwise the variant's first word.
+    """
+    size = re.search(r"\b\d+\s*cm\b", name, re.IGNORECASE)
+    if size:
+        return re.sub(r"\s+", "", size.group()).lower()
+    plain = re.split(r"\bsave\b", re.sub(r"\(.*?\)", " ", name), flags=re.IGNORECASE)[0]
+    words = re.findall(r"[a-z]+", plain.lower())
+    return words[0] if words else ""
 
 
 def _zomato_variants(item: MenuItem) -> list[dict[str, Any]]:
