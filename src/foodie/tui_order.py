@@ -13,11 +13,10 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Button, Label, Static
-from textual_image.widget import TGPImage
-
 from foodie.models import OrderPlacement, OrderStatus
 from foodie.providers.base import BaseProvider
 from foodie.qr import render_qr, render_qr_image, upi_amount
+from foodie.tui_grid import image_widget
 
 PAID = {"SUCCESS", "SUCCESSFUL", "PAID", "COMPLETED", "CHARGED", "CAPTURED"}
 # The one payment choice the cart screen offers, shared by both providers.
@@ -212,9 +211,10 @@ class OrderStatusScreen(ModalScreen[bool]):
                 yield Button("Close", id="close", variant="primary")
 
     def _qr(self, data: str) -> Widget:
-        if getattr(self.app, "kitty_graphics", False):
+        protocol = getattr(self.app, "graphics_protocol", None)
+        if protocol:
             # Keep the code square: the height sets the rows, and the width follows the aspect ratio.
-            image = TGPImage(render_qr_image(data), id="qr")
+            image = image_widget(protocol)(render_qr_image(data), id="qr")
             image.styles.width = "auto"
             image.styles.height = QR_IMAGE_ROWS
             return image

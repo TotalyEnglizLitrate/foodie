@@ -29,7 +29,8 @@ from foodie.tui_grid import (
     MenuCard,
     MenuGrid,
     fetch_photos,
-    kitty_graphics_supported,
+    graphics_protocol,
+    image_widget,
     photo_rows,
     photo_url,
     prune_photo_cache,
@@ -446,7 +447,7 @@ class MenuScreen(Screen[None]):
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "toggle_grid":
-            return self.foodie.kitty_graphics
+            return self.foodie.graphics_protocol is not None
         return super().check_action(action, parameters)
 
     async def on_mount(self) -> None:
@@ -537,7 +538,13 @@ class MenuScreen(Screen[None]):
         rows = self._photo_rows()
         for _, (_, swiggy_item, zomato_item, _) in self._visible_rows(query):
             row = (swiggy_item, zomato_item)
-            card = MenuCard(row, (swiggy_item or zomato_item).name, _prices(row), rows)
+            card = MenuCard(
+                row,
+                (swiggy_item or zomato_item).name,
+                _prices(row),
+                rows,
+                image_widget(self.foodie.graphics_protocol),
+            )
             if card.photo_url in self.foodie.photos:
                 card.set_photo(self.foodie.photos[card.photo_url])
             cards.append(card)
@@ -545,7 +552,7 @@ class MenuScreen(Screen[None]):
 
     def _prefetch_photos(self) -> None:
         """Download this menu's photos in the background, so the grid opens without waiting."""
-        if self.foodie.kitty_graphics:
+        if self.foodie.graphics_protocol:
             # An app-level worker outlives this screen, so a menu left mid-download still caches.
             self.foodie.run_worker(self._load_photos(), group="photos")
 
@@ -642,7 +649,8 @@ class FoodieTui(App[None]):
         self.address_labels: dict[str, str] = {}
         self.address_ids: dict[str, str] = {}
         self.busy = Busy(self)
-        self.kitty_graphics = False  # set in main(), before Textual owns the terminal
+        # "tgp", "sixel" or None; set in main(), before Textual owns the terminal.
+        self.graphics_protocol: str | None = None
         self.photos: dict[str, PILImage.Image | None] = {}  # shared by every menu visited
         self.notifier = make_notifier()
 
@@ -714,7 +722,7 @@ class FoodieTui(App[None]):
 
 def main() -> None:
     app = FoodieTui()
-    app.kitty_graphics = kitty_graphics_supported()
+    app.graphics_protocol = graphics_protocol()
     app.run()
 
 

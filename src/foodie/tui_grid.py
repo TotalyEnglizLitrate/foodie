@@ -1,4 +1,4 @@
-"""Menu items as a grid of photo cards, for terminals with Kitty graphics support."""
+"""Menu items as a grid of photo cards, for terminals with Kitty or sixel graphics."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import io
 import logging
+import os
 import time
 from collections.abc import Callable, Iterable
 from datetime import timedelta
@@ -21,9 +22,8 @@ from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
 from textual.widgets import Label
-from textual_image._terminal import get_cell_size
-from textual_image.renderable import tgp
-from textual_image.widget import TGPImage
+from textual_image._terminal import TerminalError, get_cell_size, probe_terminal
+from textual_image.widget import SixelImage, TGPImage
 
 from foodie.models import MenuItem
 
@@ -61,12 +61,29 @@ def photo_rows(aspects: Iterable[float]) -> int:
     return min(PHOTO_ROWS, key=stretch)
 
 
-def kitty_graphics_supported() -> bool:
-    """Whether the terminal reports Kitty graphics protocol support.
+def graphics_protocol() -> str | None:
+    """The image protocol to draw photos with: "tgp" (Kitty), "sixel", or None.
 
-    The query reads stdin, so it must run before Textual takes over the terminal.
+    TGP is preferred where both are reported, except under Zellij, which passes
+    TGP through badly, so sixel is used there when available. The probe reads
+    stdin, so it must run before Textual takes over the terminal.
     """
-    return tgp.query_terminal_support()
+    try:
+        caps = probe_terminal()
+    except TerminalError:
+        return None
+    if caps.sixel and os.environ.get("ZELLIJ"):
+        return "sixel"
+    if caps.tgp:
+        return "tgp"
+    if caps.sixel:
+        return "sixel"
+    return None
+
+
+def image_widget(protocol: str | None) -> type[TGPImage] | type[SixelImage]:
+    """The image widget class for a protocol from graphics_protocol()."""
+    return SixelImage if protocol == "sixel" else TGPImage
 
 
 def photo_url(row: MenuRow) -> str | None:
@@ -193,13 +210,20 @@ class MenuCard(Vertical):
             super().__init__()
             self.card = card
 
-    def __init__(self, row: MenuRow, name: str, prices: str, rows: int) -> None:
+    def __init__(
+        self,
+        row: MenuRow,
+        name: str,
+        prices: str,
+        rows: int,
+        image_cls: type[TGPImage] | type[SixelImage] = TGPImage,
+    ) -> None:
         super().__init__()
         self.row = row
         self.photo_url = photo_url(row)
         self._name = name
         self._prices = prices
-        self._photo = TGPImage(classes="photo")
+        self._photo = image_cls(classes="photo")
         self.set_photo_rows(rows)
 
     def set_photo_rows(self, rows: int) -> None:
