@@ -225,7 +225,6 @@ class RestaurantsScreen(Screen[None]):
     """
 
     BINDINGS = [
-        ("ctrl+r", "search", "Search"),
         Binding("slash", "focus_query", "Focus search"),
         ("q", "app.quit", "Quit"),
     ]
