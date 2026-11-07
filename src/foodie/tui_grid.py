@@ -16,6 +16,7 @@ import httpx
 from PIL import Image as PILImage
 from platformdirs import user_state_dir
 from textual.app import ComposeResult
+from textual import on
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
@@ -187,6 +188,11 @@ class MenuCard(Vertical):
     MenuCard Label { width: 100%; text-wrap: nowrap; text-overflow: ellipsis; }
     """
 
+    class Clicked(Message):
+        def __init__(self, card: MenuCard) -> None:
+            super().__init__()
+            self.card = card
+
     def __init__(self, row: MenuRow, name: str, prices: str, rows: int) -> None:
         super().__init__()
         self.row = row
@@ -207,6 +213,9 @@ class MenuCard(Vertical):
 
     def set_photo(self, photo: PILImage.Image | None) -> None:
         self._photo.image = photo
+
+    def on_click(self) -> None:
+        self.post_message(self.Clicked(self))
 
 
 class MenuGrid(VerticalScroll, can_focus=True):
@@ -264,3 +273,11 @@ class MenuGrid(VerticalScroll, can_focus=True):
     def action_select(self) -> None:
         if self.cards:
             self.post_message(self.Selected(self.cards[self.cursor].row))
+
+    @on(MenuCard.Clicked)
+    def _card_clicked(self, event: MenuCard.Clicked) -> None:
+        event.stop()
+        if event.card in self.cards:
+            self.cursor = self.cards.index(event.card)
+            self._highlight()
+            self.action_select()
