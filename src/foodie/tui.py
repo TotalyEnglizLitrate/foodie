@@ -14,7 +14,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.screen import Screen
-from textual.widgets import Button, DataTable, Footer, Header, Input, Select, Static
+from textual.widgets import Button, Checkbox, DataTable, Footer, Header, Input, Select, Static
 
 from foodie.auth import authenticate_interactive
 from foodie.customize import CartLine
@@ -220,6 +220,7 @@ class RestaurantsScreen(Screen[None]):
     #search-row { height: 3; }
     #query { width: 1fr; }
     #search { width: 16; }
+    #open-only { width: auto; margin: 0 0 0 1; }
     #auth-row { height: 3; padding: 0 4; }
     #auth-row Button { width: 1fr; }
     #auth-swiggy { margin: 0 4 0 0; }
@@ -248,6 +249,7 @@ class RestaurantsScreen(Screen[None]):
         with Horizontal(id="search-row"):
             yield Input(placeholder="Restaurant name or cuisine…", id="query")
             yield Button("Search both", id="search", variant="primary")
+            yield Checkbox("Open only", value=True, id="open-only")
         with Horizontal(id="auth-row"):
             yield Button("Swiggy: checking…", id="auth-swiggy", disabled=True)
             yield Button("Zomato: checking…", id="auth-zomato", disabled=True)
@@ -404,6 +406,9 @@ class RestaurantsScreen(Screen[None]):
                     await self.sync_auth_button(key)
             swiggy = results[0] if isinstance(results[0], list) else []
             zomato = results[1] if isinstance(results[1], list) else []
+            if self.query_one("#open-only", Checkbox).value:
+                swiggy = [r for r in swiggy if r.is_open]
+                zomato = [r for r in zomato if r.is_open]
             self.pairs = pair_restaurants(swiggy, zomato)
             logger.info("Search %r: %d Swiggy, %d Zomato, %d pairs", query, len(swiggy), len(zomato), len(self.pairs))
             for result_error in errors:
