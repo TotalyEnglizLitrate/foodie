@@ -224,7 +224,11 @@ class RestaurantsScreen(Screen[None]):
     #results { height: 1fr; }
     """
 
-    BINDINGS = [("ctrl+r", "search", "Search"), ("q", "app.quit", "Quit")]
+    BINDINGS = [
+        ("ctrl+r", "search", "Search"),
+        Binding("slash", "focus_query", "Focus search"),
+        ("q", "app.quit", "Quit"),
+    ]
 
     def __init__(self, preloaded: dict[str, ProviderState] | None = None) -> None:
         super().__init__()
@@ -360,6 +364,9 @@ class RestaurantsScreen(Screen[None]):
         self.foodie.address_ids.update(swiggy=str(s_address), zomato=str(z_address))
         return str(s_address), str(z_address)
 
+    def action_focus_query(self) -> None:
+        self.query_one("#query", Input).focus()
+
     async def action_search(self) -> None:
         status = self.query_one("#status", Static)
         query = self.query_one("#query", Input).value.strip()
@@ -444,6 +451,7 @@ class MenuScreen(Screen[None]):
     BINDINGS = [
         ("escape", "app.pop_screen", "Back"),
         Binding("g", "toggle_grid", "Grid view"),
+        Binding("slash", "focus_filter", "Focus search"),
     ]
 
     def __init__(self, pair: RestaurantPair, swiggy_address: str, zomato_address: str) -> None:
@@ -599,6 +607,9 @@ class MenuScreen(Screen[None]):
             rows = self._photo_rows()
             for card in self.query_one("#menu-grid", MenuGrid).cards:
                 card.set_photo_rows(rows)
+
+    def action_focus_filter(self) -> None:
+        self.query_one("#menu-query", Input).focus()
 
     async def action_toggle_grid(self) -> None:
         self.grid_view = not self.grid_view
