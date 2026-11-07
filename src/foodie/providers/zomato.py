@@ -630,10 +630,15 @@ class ZomatoProvider(BaseProvider):
         if not variant_id:
             return None
         groups = addon_groups or {}
-        addons = [
-            groups.get(str(gid), {"id": str(gid)})
-            for gid in detail.get("available_add_ons") or []
-        ]
+        # Each size variant lists its own add-on groups, so keep the union for
+        # the item; the customisation layer narrows it to the chosen variant.
+        group_ids = [str(gid) for gid in detail.get("available_add_ons") or []]
+        for variant in detail.get("variants") or []:
+            if isinstance(variant, dict):
+                for gid in variant.get("available_add_ons") or []:
+                    if str(gid) not in group_ids:
+                        group_ids.append(str(gid))
+        addons = [groups.get(gid, {"id": gid}) for gid in group_ids]
         categories = detail.get("categories") or []
         return MenuItem(
             id=str(variant_id),
