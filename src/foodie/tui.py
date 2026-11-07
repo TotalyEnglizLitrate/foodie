@@ -455,7 +455,9 @@ def _prices(row: tuple[MenuItem | None, MenuItem | None]) -> str:
 
 class MenuScreen(Screen[None]):
     CSS = """
-    #menu-query { height: 3; }
+    #menu-row { height: 3; }
+    #menu-query { width: 1fr; }
+    #veg-only { width: auto; margin: 0 0 0 1; }
     #menu-status { height: 2; padding: 0 1; }
     #menu-results { height: 1fr; }
     #menu-grid { height: 1fr; display: none; }
@@ -474,6 +476,7 @@ class MenuScreen(Screen[None]):
         self.zomato_address = zomato_address
         self.menu_items: list[tuple[str, object | None, object | None, float]] = []
         self._rows: dict[str, tuple[MenuItem | None, MenuItem | None]] = {}
+        self.menu_errors: list[str] = []
         self.grid_view = False
 
     @property
@@ -482,7 +485,9 @@ class MenuScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Input(placeholder="Filter menu…", id="menu-query")
+        with Horizontal(id="menu-row"):
+            yield Input(placeholder="Filter menu…", id="menu-query")
+            yield Checkbox("Veg only", id="veg-only")
         yield Static("Loading menus…", id="menu-status")
         table = DataTable(id="menu-results")
         table.cursor_type = "row"
@@ -524,21 +529,23 @@ class MenuScreen(Screen[None]):
             if isinstance(r, Exception)
         ]
         self.menu_items = pair_menu_items(swiggy_menu, zomato_menu)
+        self.menu_errors = errors
         await self.render_menu()
         self._prefetch_photos()
-        summary = f"{len(swiggy_menu)} Swiggy items · {len(zomato_menu)} Zomato items"
-        if errors:
-            summary += " | " + " | ".join(errors)
-        self.query_one("#menu-status", Static).update(summary)
 
     @on(Input.Changed, "#menu-query")
+    @on(Checkbox.Changed, "#veg-only")
     async def menu_filter_changed(self) -> None:
         await self.render_menu()
 
     def _visible_rows(self, query: str) -> Iterator[tuple[int, tuple[str, object | None, object | None, float]]]:
+        veg_only = self.query_one("#veg-only", Checkbox).value
         for n, row in enumerate(self.menu_items):
             category, swiggy_item, zomato_item, _ = row
-            names = " ".join(item.name for item in (swiggy_item, zomato_item) if item)
+            items = [item for item in (swiggy_item, zomato_item) if item]
+            names = " ".join(item.name for item in items)
+            if veg_only and not all(item.is_veg for item in items):
+                continue
             if not query or query in _normalise(names + " " + category):
                 yield n, row
 
@@ -548,7 +555,8 @@ class MenuScreen(Screen[None]):
         table.clear()
         self._rows.clear()
         current: str | None = None
-        for n, (category, swiggy_item, zomato_item, score) in self._visible_rows(query):
+        visible = list(self._visible_rows(query))
+        for n, (category, swiggy_item, zomato_item, score) in visible:
             if category != current:
                 current = category
                 table.add_row(Text(category or "Uncategorised", style="bold"), "", "", "", "", key=f"h{n}")
@@ -561,8 +569,18 @@ class MenuScreen(Screen[None]):
                 f"{score:.0%}" if swiggy_item and zomato_item else "Unmatched",
                 key=f"i{n}",
             )
+        self._update_status([row for _, row in visible])
         if self.grid_view:
             await self._render_grid(query)
+
+    def _update_status(self, rows: list[tuple[str, object | None, object | None, float]]) -> None:
+        swiggy = sum(1 for _, swiggy_item, _, _ in rows if swiggy_item)
+        zomato = sum(1 for _, _, zomato_item, _ in rows if zomato_item)
+        veg = " (veg only)" if self.query_one("#veg-only", Checkbox).value else ""
+        summary = f"{swiggy} Swiggy items · {zomato} Zomato items{veg}"
+        if self.menu_errors:
+            summary += " | " + " | ".join(self.menu_errors)
+        self.query_one("#menu-status", Static).update(summary)
 
     def _menu_photo_urls(self) -> set[str]:
         return {
