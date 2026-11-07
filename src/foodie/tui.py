@@ -129,6 +129,11 @@ def _price(value: float | None) -> str:
     return f"₹{value:,.0f}" if value is not None else "—"
 
 
+def _eta(restaurant: Restaurant | None) -> str:
+    minutes = restaurant.delivery_time_mins if restaurant is not None else None
+    return f"{minutes} min" if minutes is not None else "—"
+
+
 STARTUP_MESSAGE = "Starting Foodie — checking your Swiggy and Zomato sessions…"
 ORDER_POLL_SECONDS = 120.0  # Order-level polling when nothing is in progress.
 ACTIVE_ORDER_POLL_SECONDS = 45.0  # Matches Swiggy's own pollIntervalSec for live orders.
@@ -252,7 +257,9 @@ class RestaurantsScreen(Screen[None]):
         yield Static("Loading saved delivery addresses…", id="status")
         table = DataTable(id="results")
         table.cursor_type = "row"
-        table.add_columns("Swiggy restaurant", "Zomato restaurant", "Cost for two", "Match")
+        table.add_columns(
+            "Swiggy restaurant", "Swiggy ETA", "Zomato restaurant", "Zomato ETA", "Cost for two", "Match"
+        )
         yield table
         yield Footer()
 
@@ -407,7 +414,9 @@ class RestaurantsScreen(Screen[None]):
                 s, z = pair.swiggy, pair.zomato
                 table.add_row(
                     s.name if s else "—",
+                    _eta(s),
                     z.name if z else "—",
+                    _eta(z),
                     _price(_cost_for_two(pair)),
                     f"{pair.score:.0%}" if s and z else "—",
                 )
