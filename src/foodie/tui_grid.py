@@ -64,16 +64,16 @@ def photo_rows(aspects: Iterable[float]) -> int:
 def graphics_protocol() -> str | None:
     """The image protocol to draw photos with: "tgp" (Kitty), "sixel", or None.
 
-    TGP is preferred where both are reported, except under Zellij, which passes
-    TGP through badly, so sixel is used there when available. The probe reads
-    stdin, so it must run before Textual takes over the terminal.
+    TGP is preferred where both are reported. Under Zellij neither protocol
+    draws, even when Zellij advertises sixel, so no graphics are used there.
+    The probe reads stdin, so it must run before Textual takes over the terminal.
     """
+    if os.environ.get("ZELLIJ"):
+        return None
     try:
         caps = probe_terminal()
     except TerminalError:
         return None
-    if caps.sixel and os.environ.get("ZELLIJ"):
-        return "sixel"
     if caps.tgp:
         return "tgp"
     if caps.sixel:
