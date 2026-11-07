@@ -1,6 +1,6 @@
 [project]
 name = "foodie"
-version = "0.1.3"
+version = "0.1.4"
 description = "A unified Swiggy/Zomato tui"
 readme = "README.md"
 authors = [
