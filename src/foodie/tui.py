@@ -30,7 +30,6 @@ from foodie.tui_grid import (
     MenuGrid,
     fetch_photos,
     graphics_protocol,
-    image_widget,
     photo_rows,
     photo_url,
     prune_photo_cache,
@@ -607,7 +606,6 @@ class MenuScreen(Screen[None]):
                 (swiggy_item or zomato_item).name,
                 _prices(row),
                 rows,
-                image_widget(self.foodie.graphics_protocol),
             )
             if card.photo_url in self.foodie.photos:
                 card.set_photo(self.foodie.photos[card.photo_url])
@@ -716,7 +714,7 @@ class FoodieTui(App[None]):
         self.address_labels: dict[str, str] = {}
         self.address_ids: dict[str, str] = {}
         self.busy = Busy(self)
-        # "tgp", "sixel" or None; set in main(), before Textual owns the terminal.
+        # "tgp" or None; set in main(), before Textual owns the terminal.
         self.graphics_protocol: str | None = None
         self.photos: dict[str, PILImage.Image | None] = {}  # shared by every menu visited
         self.notifier = make_notifier()

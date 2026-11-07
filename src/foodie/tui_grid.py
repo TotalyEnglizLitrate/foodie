@@ -1,4 +1,4 @@
-"""Menu items as a grid of photo cards, for terminals with Kitty or sixel graphics."""
+"""Menu items as a grid of photo cards, for terminals with Kitty graphics support."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
 from textual.widgets import Label
 from textual_image._terminal import TerminalError, get_cell_size, probe_terminal
-from textual_image.widget import SixelImage, TGPImage
+from textual_image.widget import TGPImage
 
 from foodie.models import MenuItem
 
@@ -62,11 +62,10 @@ def photo_rows(aspects: Iterable[float]) -> int:
 
 
 def graphics_protocol() -> str | None:
-    """The image protocol to draw photos with: "tgp" (Kitty), "sixel", or None.
+    """The image protocol to draw photos with: "tgp" (Kitty), or None.
 
-    TGP is preferred where both are reported. Under Zellij neither protocol
-    draws, even when Zellij advertises sixel, so no graphics are used there.
-    The probe reads stdin, so it must run before Textual takes over the terminal.
+    Under Zellij TGP does not draw, so no graphics are used there. The probe
+    reads stdin, so it must run before Textual takes over the terminal.
     """
     if os.environ.get("ZELLIJ"):
         return None
@@ -74,16 +73,7 @@ def graphics_protocol() -> str | None:
         caps = probe_terminal()
     except TerminalError:
         return None
-    if caps.tgp:
-        return "tgp"
-    if caps.sixel:
-        return "sixel"
-    return None
-
-
-def image_widget(protocol: str | None) -> type[TGPImage] | type[SixelImage]:
-    """The image widget class for a protocol from graphics_protocol()."""
-    return SixelImage if protocol == "sixel" else TGPImage
+    return "tgp" if caps.tgp else None
 
 
 def photo_url(row: MenuRow) -> str | None:
@@ -216,14 +206,13 @@ class MenuCard(Vertical):
         name: str,
         prices: str,
         rows: int,
-        image_cls: type[TGPImage] | type[SixelImage] = TGPImage,
     ) -> None:
         super().__init__()
         self.row = row
         self.photo_url = photo_url(row)
         self._name = name
         self._prices = prices
-        self._photo = image_cls(classes="photo")
+        self._photo = TGPImage(classes="photo")
         self.set_photo_rows(rows)
 
     def set_photo_rows(self, rows: int) -> None:
