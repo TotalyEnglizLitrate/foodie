@@ -15,7 +15,7 @@ dependencies = [
     "platformdirs>=4.13.5",
     "segno>=1.6.6",
     "textual>=8.2.8",
-    "textual-image[numpy,textual]>=0.14.2",
+    "textual-image[textual]>=0.14.2",
     "typer>=0.27.3",
     "uvicorn>=0.54.0",
 ]
